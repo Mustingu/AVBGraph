@@ -1,0 +1,14 @@
+build
+test/CMakeFiles
+perf_file
+draw
+
+.zread
+.vscode
+diff.output
+output
+output_frequency
+test/output.txt
+perf.data.old
+perf.sh
+todo
