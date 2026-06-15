@@ -1,7 +1,6 @@
 #ifndef EDGE_BLOCK_H
 #define EDGE_BLOCK_H
 
-#include <utils/NotImplemented.h>
 #include <utils/utils.h>
 
 #include <cassert>
@@ -13,7 +12,6 @@
 #include "RWSpinLock.h"
 #include "VersionBlockManager.h"
 #include "gapbs.h"
-#include "test/BloomFilter.h"
 #define TMPNUM 64
 
 /**
@@ -46,6 +44,14 @@ class MyEdgeBlock : public MyEdgeBlockInterface {
   MyEdgeBlock(const MyEdgeBlock& other);
 
   size_t get_edges_and_versions() { return edges_and_versions; }
+  VersionBlockManager& GetVBM() { return VBM; }
+
+  // Accessors for testing / low-level access
+  EdgeWithIndex* get_start() { return start; }
+  unsigned get_capacity() { return capacity; }
+  EdgeWithIndex* get_tmp_item() { return tmp_item; }
+  unsigned get_tmp_ev() { return tmp_ev; }
+  TmpVersionBlock** get_tmp_vb() { return tmp_vb; }
 
   // char* properties_end() { return ; }
   /**

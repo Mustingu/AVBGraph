@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.17)
-project(MST_Sortledton)
+project(AVBGraph)
 
 # 1. 基础环境设置
 set(CMAKE_CXX_STANDARD 17)
@@ -34,19 +34,17 @@ get_all_include_directories(ALL_INC_DIRS ${CMAKE_CURRENT_SOURCE_DIR})
 file(GLOB_RECURSE ALGORITHM_SRC "algorithm/*.cpp")
 file(GLOB_RECURSE DATA_STRUCT_SRC "data-structure/*.cpp")
 file(GLOB_RECURSE UTILS_SRC "utils/*.cpp")
-file(GLOB_RECURSE MEMORY_SRC "MemoryPool/*.cpp")
 file(GLOB_RECURSE HAL_MEMORY_SRC "HALMemoryPool/*.cpp")
 file(GLOB_RECURSE THIRD_PARTY_SRC "third-party/*.cpp")
-file(GLOB TRANSACTION_SRC "data-structure/Transaction/*.cpp")
 
 set(AVB_SOURCES 
     ${ALGORITHM_SRC}
     ${DATA_STRUCT_SRC}
     ${UTILS_SRC}
-    ${MEMORY_SRC}
+    
     ${HAL_MEMORY_SRC}
     ${THIRD_PARTY_SRC}
-    ${TRANSACTION_SRC}
+    
 )
 
 # =========================================================
@@ -82,5 +80,23 @@ target_compile_options(AVB_Core PRIVATE
 add_executable(test_version_block test/test_version_block.cpp)
 target_link_libraries(test_version_block PRIVATE AVB_Core)
 target_compile_options(test_version_block PRIVATE
+    -Wno-deprecated-declarations -Wno-deprecated -g -fopenmp -O3 -std=c++17 -lpthread -ltbb -ltcmalloc -DJEMALLOC_NO_DEMANGLE
+)
+
+add_executable(test_vb_real test/test_vb_real.cpp)
+target_link_libraries(test_vb_real PRIVATE AVB_Core)
+target_compile_options(test_vb_real PRIVATE
+    -Wno-deprecated-declarations -Wno-deprecated -g -fopenmp -O3 -std=c++17 -lpthread -ltbb -ltcmalloc -DJEMALLOC_NO_DEMANGLE
+)
+
+add_executable(test_avb_full test/test_avb_full.cpp)
+target_link_libraries(test_avb_full PRIVATE AVB_Core)
+add_executable(test_avb_real test/test_avb_real.cpp)
+target_link_libraries(test_avb_real PRIVATE AVB_Core)
+target_compile_options(test_avb_real PRIVATE
+    -Wno-deprecated-declarations -Wno-deprecated -g -fopenmp -O0 -std=c++17 -lpthread -ltbb
+)
+
+target_compile_options(test_avb_full PRIVATE
     -Wno-deprecated-declarations -Wno-deprecated -g -fopenmp -O3 -std=c++17 -lpthread -ltbb -ltcmalloc -DJEMALLOC_NO_DEMANGLE
 )

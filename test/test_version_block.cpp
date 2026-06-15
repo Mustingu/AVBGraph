@@ -7,9 +7,6 @@
 #include "MyEdgeArray.h"
 #include "MyTime.h"
 #include "Permute.h"
-#include "Sortledton_component/EdgeArray.h"
-#include "Sortledton_component/SnapshotTransaction.h"
-#include "Sortledton_component/TransactionManager.h"
 #include "VersionBlock/AllVBManager.h"
 #include "tbb/concurrent_hash_map.h"
 #include "utils/EdgeReader.h"
@@ -43,7 +40,6 @@ MemoryAllocator* la;
 thread_local int threadid;
 int count_vb_n = 0;
 
-bool is_slt = false;
 
 std::map<std::pair<dst_t, dst_t>, std::vector<unsigned>> edge_wight_versioned;
 unsigned ans[MAXN + 10];
@@ -70,7 +66,7 @@ class MyTest {
   MyEdgeArray* MEA;
 
   MyTest() {
-    VBM = new AllVBManager(65, !is_slt);
+    VBM = new AllVBManager(65, true);
     la = new MemoryAllocator();
     la->init(50, 65);
     // for (int i = 0; i < 40; i++) {

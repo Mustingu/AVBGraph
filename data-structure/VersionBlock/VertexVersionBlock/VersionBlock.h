@@ -171,6 +171,9 @@ class VersionBlock {
   dst_t src_;
 
   VersionBlock(TmpVersionBlock* tvb);
+  VersionBlock(epoch_t ts) : timestamp_(ts), version_num_(0), start_(nullptr),
+      end_(0), last_vb_(nullptr), manager_(nullptr), edge_num_(0),
+      last_epoch_(0), readts_num_(0) {}
 
   void SetNextVB(VersionBlock* next, epoch_t ts);
 

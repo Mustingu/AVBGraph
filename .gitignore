@@ -10,5 +10,10 @@ output
 output_frequency
 test/output.txt
 perf.data.old
-perf.sh
-todo
+
+# local test programs (not for GitHub)
+test/test_vb_lookup
+test/test_vb_lookup.cpp
+test/test_vb_real.cpp
+test/test_avb_full.cpp
+test/test_avb_real.cpp
