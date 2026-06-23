@@ -24,6 +24,26 @@ typedef uint64_t vertex_id_t;
 typedef vertex_id_t dst_t;
 typedef uint64_t weight_t;
 typedef uint32_t epoch_t;
+typedef uint32_t intra_t;
+#define INTRA_MAX UINT32_MAX
+
+// Composite timestamp: (coarse epoch, intra-epoch time).
+// Used for fine-grained visibility checks.
+struct Composite {
+  epoch_t e;
+  intra_t i;
+  Composite() : e(0), i(0) {}
+  Composite(epoch_t ee, intra_t ii) : e(ee), i(ii) {}
+  bool operator<(const Composite& o) const {
+    return e < o.e || (e == o.e && i < o.i);
+  }
+  bool operator<=(const Composite& o) const {
+    return *this < o || (e == o.e && i == o.i);
+  }
+  bool operator==(const Composite& o) const {
+    return e == o.e && i == o.i;
+  }
+};
 
 // Version used to indicate that this is the first version of any version chain.
 // This does not need to be the original first version from system start but

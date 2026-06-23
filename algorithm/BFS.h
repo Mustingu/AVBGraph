@@ -15,14 +15,14 @@
 #include <vector>
 
 #include "AllVBManager.h"
-#include "MyEdgeArray.h"
+#include "data-structure/EdgeBlock/GraphStore.h"
 #include "gapbs.h"
 
 class BFS {
  public:
-  BFS(MyEdgeArray* input_graph, AllVBManager* input_vbm, int input_thread = 64);
+  BFS(GraphStore* input_graph, AllVBManager* input_vbm, int input_thread = 64);
   void bfs(uint64_t root, int alpha = 15, int beta = 18,
-           MyEdgeArray* MEA = nullptr);
+           GraphStore* MEA = nullptr);
   int64_t init_distance(Transaction& txn);
 
   inline std::vector<int64_t>* get_raw_result() { return &distances; }
@@ -36,7 +36,7 @@ class BFS {
   int64_t do_bfs_BUStep(Transaction& txn, int64_t distance,
                         gapbs::Bitmap& front, gapbs::Bitmap& next);
 
-  MyEdgeArray* graph;
+  GraphStore* graph;
   AllVBManager* vbm;
   std::vector<int64_t> distances;
   uint64_t num_vertices;

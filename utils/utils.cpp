@@ -9,6 +9,12 @@
 #include <algorithm>
 #include <cctype>
 
+#ifdef TVB_STATS
+std::atomic<long long> tvb_scan_total(0);
+std::atomic<long long> tvb_scan_vertices(0);
+std::atomic<long long> tvb_record_total(0);
+#endif
+
 bool file_exists(const string &name) {
   struct stat buffer;
   return (stat(name.c_str(), &buffer) == 0);

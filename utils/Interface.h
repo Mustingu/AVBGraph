@@ -1,13 +1,14 @@
 #ifndef UTILS_INTERFACE_H
 #define UTILS_INTERFACE_H
 
+#include <data-structure/data_types.h>
 #include <memory>
 
 class VersionBlock;
 class TmpVersionBlock;
 class VersionData;
 
-class MyEdgeBlockInterface {
+class VertexEdgesInterface {
  public:
   virtual unsigned Transform(TmpVersionBlock* tvb, VersionBlock* vb) = 0;
   virtual void unleashReadLock() = 0;
@@ -18,6 +19,7 @@ class VBDataInterface {
   virtual void registerVersionBlock(TmpVersionBlock* vb) = 0;
   virtual void VB_pushback(TmpVersionBlock* vb, unsigned threadid) = 0;
   virtual unsigned add_txn() = 0;
+  virtual intra_t fetch_add_intra() = 0;
 };
 
 class Transaction;
@@ -38,6 +40,8 @@ class VBManagerInterface {
 class VersionedTopologyInterface {
  public:
   virtual bool insert_edge_block(dst_t* edge, epoch_t epoch,
+                                 Transaction* txn) = 0;
+  virtual bool delete_edge_block(dst_t* edge, epoch_t epoch,
                                  Transaction* txn) = 0;
 
   // virtual shared_ptr<VersionBlock> getVersionBlock(epoch_t epoch) = 0;

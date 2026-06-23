@@ -11,9 +11,14 @@ output_frequency
 test/output.txt
 perf.data.old
 
-# local test programs (not for GitHub)
+# internal test programs (not for release)
 test/test_vb_lookup
 test/test_vb_lookup.cpp
 test/test_vb_real.cpp
+test/test_vb_real
 test/test_avb_full.cpp
+test/test_avb_full
 test/test_avb_real.cpp
+test/test_avb_real
+test/test_version_block
+test/CMakeFiles

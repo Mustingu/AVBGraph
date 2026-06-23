@@ -27,6 +27,7 @@ bool VBIterator::FindIndex(Satistical* count) {
       }
 #endif
       vb_ = vb_->last_vb_;
+      if (!vb_) return true;
       index_ = vb_->start_;
 #ifdef FINEGRAIN
       if (vb_->timestamp_ == version_) {  // fine-grained
@@ -35,20 +36,17 @@ bool VBIterator::FindIndex(Satistical* count) {
       }
 #endif
     }
-#ifdef FINEGRAIN
-    if (index_ != nullptr && index_->block == version_) return true;
-#endif
     return false;
   }
 
   index_ = vb_->start_;
   count->reach_record();
   while (index_ == nullptr || index_->block > version_) {
-    // if (index_) std::cout << index_->block;
     if (vb_->last_epoch_ <= version_) {
       return true;
     }
     vb_ = vb_->last_vb_;
+    if (!vb_) return true;
     index_ = vb_->start_;
     count->reach_record();
   }
@@ -89,5 +87,6 @@ void VBIterator::getNext(Satistical* count) {
     return void(is_end_ = true);
   }
   vb_ = vb_->last_vb_;
+  if (!vb_) { is_end_ = true; return; }
   is_end_ = FindIndex(count);
 }

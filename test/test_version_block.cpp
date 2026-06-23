@@ -4,7 +4,7 @@
 
 #include "CSRBaseline.h"
 #include "GraphAlgorithm.h"
-#include "MyEdgeArray.h"
+#include "data-structure/EdgeBlock/GraphStore.h"
 #include "MyTime.h"
 #include "Permute.h"
 #include "VersionBlock/AllVBManager.h"
@@ -38,6 +38,11 @@ atomic<int> count_x(0), count_y(0), count_vb(0);
 atomic<long long> count_ll(0);
 MemoryAllocator* la;
 thread_local int threadid;
+#ifdef TVB_STATS
+std::atomic<long long> tvb_scan_total(0);
+std::atomic<long long> tvb_scan_vertices(0);
+std::atomic<long long> tvb_record_total(0);
+#endif
 int count_vb_n = 0;
 
 
@@ -63,7 +68,7 @@ class MyTest {
  public:
   AllVBManager* VBM;
 
-  MyEdgeArray* MEA;
+  GraphStore* MEA;
 
   MyTest() {
     VBM = new AllVBManager(65, true);
@@ -76,7 +81,7 @@ class MyTest {
     // }
     // // std::cout << "init end\n";
     // exit(0);
-    MEA = new MyEdgeArray(200);
+    MEA = new GraphStore(200);
   }
   unsigned CheckReadEpoch() { return VBM->getCurrentReadEpoch(); }
   double check_avg_degree() {
@@ -100,14 +105,14 @@ class MyTest {
 
     for (int i = 0; i < node_num; i++) {
       auto ds =
-          dynamic_cast<MyEdgeArray*>(tx->getTopology())->GetBlockByIndex(i);
+          dynamic_cast<GraphStore*>(tx->getTopology())->GetBlockByIndex(i);
 
       ds->getReadLock();
 
       // std::cout << "   " << i << " : \n\n";
 
       GraphAlgorithms::for_each_edge_with_property(
-          ds, tx->get_read_epoch(), [&](EdgeWithIndex* edge, EdgeWithIndex* p) {
+          ds, Composite(tx->get_read_epoch(), INTRA_MAX), [&](EdgeWithIndex* edge, EdgeWithIndex* p) {
             // printf("%d[%d] %d[%d] : %lf\n", i, MEA->p_mHashMap[i], edge->e,
             //        MEA->p_mHashMap[edge->e],
             //        *reinterpret_cast<double*>(&p->properties));
@@ -214,10 +219,10 @@ class MyTest {
     return sm;
   }
 
-  MyEdgeBlock* BuildEB(unsigned vid, unsigned n, unsigned m) {
+  VertexEdges* BuildEB(unsigned vid, unsigned n, unsigned m) {
     //  std::cout << i << " " << properties[i + v] << '\n';
     // std::cout << "real answer is : " << sm << '\n';
-    auto eb = new MyEdgeBlock(vid);
+    auto eb = new VertexEdges(vid);
     eb->build(m, std::get<1>(vid2edgewithpro[vid]),
               std::get<2>(vid2edgewithpro[vid]));
     return eb;
@@ -252,14 +257,14 @@ class MyTest {
     dst_t p_id;
     vertex_dictionary_t::accessor w;
     if (VertexDictionary->insert(w, src)) {
-      auto eb = new MyEdgeBlock();
+      auto eb = new VertexEdges();
       eb->build(0, nullptr, nullptr);
       // p_id = MEA->new_vertex();
 
       p_id = MEA->node_num.fetch_add(1);
-      grow_vector_if_smaller(MEA->blocks, p_id, MEBC());
+      grow_vector_if_smaller(MEA->blocks, p_id, VertexEntry());
       // MEA->growing_vector_mutex.lock();
-      // auto it = MEA->blocks.push_back(MEBC(eb));
+      // auto it = MEA->blocks.push_back(VertexEntry(eb));
       MEA->p_mHashMap[p_id] = src;
       MEA->blocks[p_id].eb = eb;
 
@@ -485,7 +490,7 @@ void Txn_Write() {
   std::cout << "count_x = " << count_x << ", count_y = " << count_y << '\n'
             << "count_vb = " << count_vb << '\n';
   return;
-  MyEdgeArray* MEA_t = mytest.MEA;
+  GraphStore* MEA_t = mytest.MEA;
   for (int i = 1; i <= times; i++) {
     mytest.UpdateEB(i);
     if (i % BATCHTXNNUM == 0) {
@@ -515,7 +520,7 @@ void Txn_Write() {
 }
 
 void Mytest_Debug() {
-  MyEdgeArray* MEA_t = mytest.MEA;
+  GraphStore* MEA_t = mytest.MEA;
   std::cout << "real answer : " << CheckSumByEdgeWight() << '\n';
   Transaction* txn = new Transaction(1, true, false, MEA_t);
   txn->set_read_epoch(mytest.VBM->getCurrentReadEpoch());
@@ -695,7 +700,6 @@ void DoAlgorithm() {
 
   // if (Arg.algorithm_ == "sssp") {
   SSSP sssp(mytest.MEA, mytest.VBM, Arg.read_thread);
-
   std::this_thread::sleep_for(std::chrono::milliseconds(1000));
   PrintFunctionTime(
       [&]() {
@@ -703,6 +707,24 @@ void DoAlgorithm() {
         sssp.compute_sssp(mytest.GetVertexID(Arg.bfsroot), 2 /*, mytest.MEA*/);
       },
       "SSSP");
+
+  LCC lcc(mytest.MEA, mytest.VBM, Arg.read_thread);
+  std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+  PrintFunctionTime(
+      [&]() { omp_set_num_threads(64); lcc.compute_lcc(/*mytest.MEA*/); },
+      "LCC");
+
+  WCC wcc(mytest.MEA, mytest.VBM, Arg.read_thread);
+  std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+  PrintFunctionTime(
+      [&]() { omp_set_num_threads(64); wcc.compute_wcc(/*mytest.MEA*/); },
+      "WCC");
+
+  CDLP cdlp(mytest.MEA, mytest.VBM, Arg.read_thread);
+  std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+  PrintFunctionTime(
+      [&]() { omp_set_num_threads(64); cdlp.compute_cdlp(10 /*, mytest.MEA*/); },
+      "CDLP");
   // }
 }
 void OutputData() {
@@ -1115,5 +1137,12 @@ int main(int argc, char** argv) {
   // else {
   //   PrintFunctionTime(SLT_Write, "slttest.SLT_Write");
   // }
+#ifdef TVB_STATS
+  long long _scans = tvb_scan_total.load();
+  long long _records = tvb_record_total.load();
+  if (_scans > 0)
+    printf("TVB stats: %lld active TVBs scanned, %lld records (%.1f rec/TVB)\n",
+           _scans, _records, (double)_records / _scans);
+#endif
   return 0;
 }

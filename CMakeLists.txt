@@ -77,9 +77,9 @@ target_compile_options(AVB_Core PRIVATE
 # =========================================================
 # 目标 B: 保持你原来的可执行文件 (test_version_block)
 # =========================================================
-add_executable(test_version_block test/test_version_block.cpp)
-target_link_libraries(test_version_block PRIVATE AVB_Core)
-target_compile_options(test_version_block PRIVATE
+add_executable(avb_benchmark test/test_version_block.cpp)
+target_link_libraries(avb_benchmark PRIVATE AVB_Core)
+target_compile_options(avb_benchmark PRIVATE
     -Wno-deprecated-declarations -Wno-deprecated -g -fopenmp -O3 -std=c++17 -lpthread -ltbb -ltcmalloc -DJEMALLOC_NO_DEMANGLE
 )
 

@@ -107,13 +107,12 @@ VersionBlockManager::~VersionBlockManager() {
 
 void VersionBlockManager::PushVB(int& edge_num, VersionBlock* nw) {
   edge_num += nw->edge_num_;
-  // if (nw == vb_end) {
-  //   std::cout << end_epoch_ << " ?? " << nw->timestamp_ << " " << nw << '\n';
-  // }
   nw->SetNextVB(vb_end, end_epoch_);
-  // assert(nw != nw->last_vb_);
   vb_end = nw;
   end_epoch_ = nw->timestamp_;
+#ifdef FINEGRAIN
+  PushVBIndex(nw->timestamp_, nw);
+#endif
 }
 
 int VersionBlockManager::getDegreeVersioned(epoch_t epoch) {

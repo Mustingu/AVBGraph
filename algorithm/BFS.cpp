@@ -1,6 +1,6 @@
 #include "BFS.h"
 
-BFS::BFS(MyEdgeArray* input_graph, AllVBManager* input_vbm, int input_thread)
+BFS::BFS(GraphStore* input_graph, AllVBManager* input_vbm, int input_thread)
     : graph(input_graph), vbm(input_vbm), thread_num(input_thread) {
   max_vid = graph->get_node_num();
   num_vertices = max_vid;
@@ -23,10 +23,13 @@ int64_t BFS::init_distance(Transaction& txn) {
   return total_edge_num / 2;
 }
 
-void BFS::bfs(uint64_t root, int alpha, int beta, MyEdgeArray* MEA) {
+void BFS::bfs(uint64_t root, int alpha, int beta, GraphStore* MEA) {
   Transaction* txn = new Transaction(1, true, false, graph);
   vbm->registerROTransaction(txn);
-  auto read_ts = txn->get_read_epoch();
+  epoch_t read_ts = txn->get_read_epoch();
+#ifdef FINEGRAIN
+  Composite fg_read_ts = txn->get_read_ts();
+#endif
 
   if (max_vid != graph->get_node_num()) [[unlikely]] {
     max_vid = graph->get_node_num();
@@ -173,7 +176,7 @@ int64_t BFS::do_bfs_TDStep(Transaction& txn, int64_t distance,
       ds->getReadLock();
 
       GraphAlgorithms::for_each_edge(
-          ds, txn.get_read_epoch(),
+          ds, Composite(txn.get_read_epoch(), 0),
           [&](EdgeWithIndex* edge) {
             auto dst = edge->e & ~DELETION_MASK;
             // std::cout << "dst " << dst << '\n';
@@ -211,7 +214,7 @@ int64_t BFS::do_bfs_BUStep(Transaction& txn, int64_t distance,
 
       bool found_neighbor = false;
       GraphAlgorithms::for_each_edge_condition(
-          ds, txn.get_read_epoch(), [&](EdgeWithIndex* edge) -> bool {
+          ds, Composite(txn.get_read_epoch(), 0), [&](EdgeWithIndex* edge) -> bool {
             if (front.get_bit(edge->e & ~DELETION_MASK)) {
               distances[u] = distance;
               awake_count++;

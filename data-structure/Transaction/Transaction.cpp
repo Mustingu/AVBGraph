@@ -18,6 +18,10 @@ void Transaction::insertedge(dst_t* edge) {
   ds->insert_edge_block(edge, epoch_, this);
 }
 
+void Transaction::deletedge(dst_t* edge) {
+  ds->delete_edge_block(edge, epoch_, this);
+}
+
 void Transaction::execute() {
   ds->insert_edge_block(one_edge_.edge, epoch_, this);
   // return;
@@ -30,7 +34,9 @@ void Transaction::execute() {
 
 void Transaction::commit() {
 #ifdef FINEGRAIN
-  auto num = vb_data_->add_txn();
+  // Ensure intra_c is fetched (lazy, fetched once from epoch counter)
+  if (!intra_c_) intra_c_ = vb_data_->fetch_add_intra();
+  // vb_data_->add_txn();
   for (auto eb : EB_vec_) {
     eb->unleashReadLock();
   }

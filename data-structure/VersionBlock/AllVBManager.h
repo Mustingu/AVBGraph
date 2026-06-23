@@ -42,9 +42,12 @@ class VBData : public VBDataInterface {
   }
 
   unsigned get_txn_size() const { return txn_num_; }
-  // unsigned get_commited_txn_size() const { return committed_txn_num_; }
   unsigned add_txn() { return txn_num_.fetch_add(1); }
   unsigned add_txn2() { return finish_num_.fetch_add(1); }
+
+  // Fine-grained: per-epoch intra-epoch timestamp counter
+  intra_t fetch_add_intra() { return intra_counter_.fetch_add(1) + 1; }
+  intra_t get_intra_counter() const { return intra_counter_.load(); }
   bool get_first_committed() const { return first_committed_; }
   epoch_t get_epoch() const { return epoch_; }
   // bool all_commit() const {
@@ -71,10 +74,10 @@ class VBData : public VBDataInterface {
   bool first_committed_;
   VersionBlock* version_block_;
 
-  // bool all_flag = false;
   std::atomic_flag has_trans = ATOMIC_FLAG_INIT;
   std::atomic<unsigned> txn_num_;
   std::atomic<unsigned> finish_num_;
+  std::atomic<intra_t> intra_counter_{0};  // fine-grained intra-epoch counter
   // std::atomic<unsigned> committed_txn_num_;
   epoch_t epoch_;
 

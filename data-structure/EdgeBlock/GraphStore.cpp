@@ -1,14 +1,14 @@
-#include "MyEdgeArray.h"
+#include "data-structure/EdgeBlock/GraphStore.h"
 
-MEBC::MEBC() { eb = nullptr; }
-MEBC::MEBC(MyEdgeBlock* eb) : eb(eb) {}
+VertexEntry::VertexEntry() { eb = nullptr; }
+VertexEntry::VertexEntry(VertexEdges* eb) : eb(eb) {}
 
-MyEdgeArray::MyEdgeArray(size_t block_count) : block_count(block_count) {
+GraphStore::GraphStore(size_t block_count) : block_count(block_count) {
   p_mHashMap.resize(block_count);
   blocks.resize(block_count);
 }
 
-bool MyEdgeArray::insert_edge_block(dst_t* edge, epoch_t epoch,
+bool GraphStore::insert_edge_block(dst_t* edge, epoch_t epoch,
                                     Transaction* txn) {
   auto v = edge[0], e = edge[1];
   bool it = 1;
@@ -16,8 +16,16 @@ bool MyEdgeArray::insert_edge_block(dst_t* edge, epoch_t epoch,
   return f;
 }
 
+bool GraphStore::delete_edge_block(dst_t* edge, epoch_t epoch,
+                                    Transaction* txn) {
+  auto v = edge[0], e = edge[1];
+  bool it = 1;
+  bool f = blocks[v].eb->delete_edge_block(edge + 1, epoch, txn, !it);
+  return f;
+}
+
 template <typename T>
-void MyEdgeArray::grow_vector_if_smaller(tbb::concurrent_vector<T>& v, size_t s,
+void GraphStore::grow_vector_if_smaller(tbb::concurrent_vector<T>& v, size_t s,
                                          T init_value) {
   if (v.capacity() <=
       s) {  // Only synchronize with other threads if potentially necessary
@@ -27,25 +35,25 @@ void MyEdgeArray::grow_vector_if_smaller(tbb::concurrent_vector<T>& v, size_t s,
     }
   }
 }
-vertex_id_t MyEdgeArray::new_vertex() {
-  auto eb = new MyEdgeBlock();
+vertex_id_t GraphStore::new_vertex() {
+  auto eb = new VertexEdges();
   eb->build(0, nullptr, nullptr);
   auto v = node_num.fetch_add(1);
   eb->setSrc(v);
   if (blocks.capacity() <= v) {
     std::scoped_lock<std::mutex> lock(growing_vector_mutex);
     if (blocks.capacity() <= v) {
-      blocks.grow_to_at_least(blocks.capacity() * 2, MEBC());
+      blocks.grow_to_at_least(blocks.capacity() * 2, VertexEntry());
     }
   }
   blocks[v].eb = eb;
 
   return v;
 }
-unsigned MyEdgeArray::check_degree(unsigned index) {
+unsigned GraphStore::check_degree(unsigned index) {
   return blocks[index].eb->get_degree();
 }
-unsigned MyEdgeArray::check_degree(unsigned index, epoch_t epoch) {
+unsigned GraphStore::check_degree(unsigned index, epoch_t epoch) {
   blocks[index].eb->getReadLock();
   auto degree = blocks[index].eb->get_degree(epoch);
   blocks[index].eb->unleashReadLock();

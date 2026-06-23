@@ -5,15 +5,13 @@
 unsigned TmpVersionBlock::InsertVersion(dst_t* edge, epoch_t last_epoch,
                                         unsigned last_index, VersionBlock* vb,
                                         Transaction* txn, unsigned offset,
-                                        unsigned mt, epoch_t le) {
+                                        unsigned mt, epoch_t le,
+                                        intra_t old_intra, intra_t new_intra) {
   version_num_++;
   if (version_num_ > tmp_num) {
-    // count_vb++;
     if (tmp_num != 0) {
       tmp_num <<= 1;
       auto new_tmp = new VersionEntry[tmp_num];
-      // auto new_tmp = reinterpret_cast<VersionEntry *>(
-      //     malloc((tmp_num) * sizeof(VersionEntry)));
       memcpy(new_tmp, tmp_entry_, (tmp_num >> 1) * sizeof(VersionEntry));
       delete[] tmp_entry_;
       tmp_entry_ = new_tmp;
@@ -21,7 +19,6 @@ unsigned TmpVersionBlock::InsertVersion(dst_t* edge, epoch_t last_epoch,
       tmp_num = 8;
       tmp_entry_ = new VersionEntry[tmp_num];
     }
-    // count_vb++;
   }
   memcpy(&tmp_entry_[version_num_ - 1].edge, edge, sizeof(dst_t) << 1);
   tmp_entry_[version_num_ - 1].merge_times = mt;
@@ -31,6 +28,8 @@ unsigned TmpVersionBlock::InsertVersion(dst_t* edge, epoch_t last_epoch,
       (txn->is_write_only() ? 0 : READ_WRITE_TXN);
   tmp_entry_[version_num_ - 1].link.Set(last_epoch, last_index, vb);
   tmp_entry_[version_num_ - 1].last_epoch = le;
+  tmp_entry_[version_num_ - 1].old_intra_c = old_intra;
+  tmp_entry_[version_num_ - 1].new_intra_c = new_intra;
   return version_num_ - 1;
 }
 

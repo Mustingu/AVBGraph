@@ -15,15 +15,15 @@
 #include <vector>
 
 #include "AllVBManager.h"
-#include "MyEdgeArray.h"
+#include "data-structure/EdgeBlock/GraphStore.h"
 #include "gapbs.h"
 
 class PageRank {
  public:
-  PageRank(MyEdgeArray* input_graph, AllVBManager* input_vbm,
+  PageRank(GraphStore* input_graph, AllVBManager* input_vbm,
            int input_thread = 64);
   void compute_pagerank(uint64_t num_iterations, double damping_factor,
-                        MyEdgeArray* MEA = nullptr,
+                        GraphStore* MEA = nullptr,
                         Satistical* global_counter = nullptr);
 
   inline std::vector<double>* get_raw_result() { return &scores; }
@@ -32,7 +32,7 @@ class PageRank {
   }
 
  private:
-  MyEdgeArray* graph;
+  GraphStore* graph;
   AllVBManager* vbm;
   std::vector<double> scores;
   uint64_t num_vertices;

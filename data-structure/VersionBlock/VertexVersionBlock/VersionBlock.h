@@ -30,6 +30,8 @@ class VersionEntry {
  public:
   unsigned offset, merge_times;
   epoch_t last_epoch;
+  intra_t old_intra_c;  // fine-grained: intra_c of predecessor
+  intra_t new_intra_c;  // fine-grained: intra_c of this new version
   dst_t txn;
   dst_t edge, weight;
   VersionLink link;
@@ -78,9 +80,42 @@ struct EdgeWithIndex {
   }
 
   bool HasTmpVB() { return block & TMPVB_MASK; }
-  epoch_t GetLinkBlock() { return block & ~TMPVB_MASK; }
+  epoch_t GetLinkBlock() const { return block & ~TMPVB_MASK; }
 
   void clear() { link = 0; }
+
+  // Visibility check for PA/tmp_item scanning (coarse epoch-level)
+  bool IsVisibleAt(epoch_t snap) const {
+    return GetLinkBlock() <= snap;
+  }
+
+  // Fine-grained visibility: strict composite comparison (creation only)
+  bool IsVisibleAtComposite(Composite query) const {
+    return Composite(GetCoarseC(), GetIntraC()) < query;
+  }
+  // Fine-grained visibility with invalidation: c < query <= inv
+  // For VB/TVB entries that have a known invalidation time
+  bool IsVisibleAtComposite(Composite query, Composite inv) const {
+    return Composite(GetCoarseC(), GetIntraC()) < query && query <= inv;
+  }
+
+  // ---- Fine-grained accessors ----
+  // Edge half [0]: coarse_c in block, intra_c in index
+  epoch_t GetCoarseC() const { return block & ~TMPVB_MASK; }
+  intra_t GetIntraC() const { return index; }
+  void SetEdgeFG(dst_t d, epoch_t coarse, intra_t ic) {
+    e = d;
+    block = coarse;
+    index = ic;
+  }
+  // Property half [1]: pred_index in block, intra_inv in index
+  unsigned GetPredIndex() const { return block; }
+  intra_t GetIntraInv() const { return index; }
+  void SetPropFG(dst_t w, unsigned pred_idx, intra_t inv) {
+    properties = w;
+    block = pred_idx;
+    index = inv;
+  }
 };
 
 /**
@@ -104,7 +139,7 @@ class TmpVersionBlock {
 
   VBManagerInterface* manager_;
 
-  MyEdgeBlockInterface* edge_block_;
+  VertexEdgesInterface* edge_block_;
   epoch_t timestamp_;
   VersionEntry* tmp_entry_;
   void Clear() {
@@ -129,15 +164,16 @@ class TmpVersionBlock {
           // tmp_entry_.reserve(5);
         };
 
-  void SetEdgeBlock(MyEdgeBlockInterface* edge_block) {
+  void SetEdgeBlock(VertexEdgesInterface* edge_block) {
     edge_block_ = edge_block;
   }
-  MyEdgeBlockInterface* GetEdgeBlock() { return edge_block_; }
+  VertexEdgesInterface* GetEdgeBlock() { return edge_block_; }
   epoch_t GetTimestamp() { return timestamp_; }
   void SetTimestamp(epoch_t ts) { timestamp_ = ts; }
   unsigned InsertVersion(dst_t* edge, epoch_t last_epoch, unsigned last_index,
                          VersionBlock* vb, Transaction* txn, unsigned offset,
-                         unsigned mt, epoch_t le);
+                         unsigned mt, epoch_t le, intra_t old_intra = 0,
+                         intra_t new_intra = 0);
   bool ChangeVersion(dst_t* edge, unsigned index, Transaction* txn, unsigned mt,
                      unsigned offset);
   void ChangeNextIndex(unsigned index, epoch_t next_epoch, unsigned next_index);

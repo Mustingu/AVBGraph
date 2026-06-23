@@ -15,14 +15,14 @@
 #include <vector>
 
 #include "AllVBManager.h"
-#include "MyEdgeArray.h"
+#include "data-structure/EdgeBlock/GraphStore.h"
 #include "gapbs.h"
 
 class SSSP {
  public:
-  SSSP(MyEdgeArray* input_graph, AllVBManager* input_vbm,
+  SSSP(GraphStore* input_graph, AllVBManager* input_vbm,
        int input_thread = 64);
-  void compute_sssp(uint64_t source, double delta, MyEdgeArray* MEA = nullptr);
+  void compute_sssp(uint64_t source, double delta, GraphStore* MEA = nullptr);
 
   inline std::vector<double>* get_raw_result() { return &distances; }
   inline std::vector<std::pair<uint64_t, double>>* get_result() {
@@ -30,7 +30,7 @@ class SSSP {
   }
 
  private:
-  MyEdgeArray* graph;
+  GraphStore* graph;
   AllVBManager* vbm;
   std::vector<double> distances;
   uint64_t num_vertices;

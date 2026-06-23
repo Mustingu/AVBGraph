@@ -16,7 +16,7 @@
 #include "HALMemoryPool/BlockAllocator.hpp"
 #include "data-structure/data_types.h"
 
-// #define FINEGRAIN
+#define FINEGRAIN
 
 // BUG: little MATCHTXNNUM (such as 10) will cause too many txn-block, insulting
 // sink and transform error
@@ -46,6 +46,14 @@ extern atomic<int> count_x, count_y, count_vb;
 extern MemoryAllocator* la;
 extern thread_local int threadid;
 extern int xxx, count_vb_n;
+
+// #define TVB_STATS  // uncomment for TVB scan statistics
+// #define PR_DEBUG   // uncomment for PageRank per-iteration debug output
+#ifdef TVB_STATS
+extern std::atomic<long long> tvb_scan_total;
+extern std::atomic<long long> tvb_scan_vertices;
+extern std::atomic<long long> tvb_record_total;
+#endif
 
 bool file_exists(const string& name);
 bool endsWith(const string& fullString, const string& ending);

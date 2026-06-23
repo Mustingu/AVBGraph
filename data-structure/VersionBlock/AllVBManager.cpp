@@ -328,13 +328,21 @@ void AllVBManager::registerTransaction(Transaction* txn) {
 void AllVBManager::registerROTransaction(Transaction* txn, int thread_id_) {
   if (thread_id_ == -1) thread_id_ = thread_id;
   epoch_t re;
-  // std::cout << read_epoch_ << " " << min_read_epoch << '\n';
-  // exit(0);
   do {
     re = read_epoch_;
     active_read_epochs[thread_id_] = re;
   } while (re < min_read_epoch);
   txn->set_read_epoch(re);
+#ifdef FINEGRAIN
+  // Capture fine-grained read timestamp from earliest unpublished epoch
+  auto* vbdata = active_txns_[read_epoch_cur_];
+  // Validate: active_txns_ slots are never nulled, so check epoch matches
+  if (vbdata && vbdata->get_epoch() == re + 1) {
+    txn->set_read_ts(Composite(re + 1, vbdata->get_intra_counter()));
+  } else {
+    txn->set_read_ts(Composite(re, INTRA_MAX));
+  }
+#endif
 }
 void AllVBManager::deregisterROTransaction(int thread_id_) {
   if (thread_id_ == -1) thread_id_ = thread_id;

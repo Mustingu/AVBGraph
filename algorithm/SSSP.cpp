@@ -1,6 +1,6 @@
 #include "SSSP.h"
 
-SSSP::SSSP(MyEdgeArray* input_graph, AllVBManager* input_vbm, int input_thread)
+SSSP::SSSP(GraphStore* input_graph, AllVBManager* input_vbm, int input_thread)
     : graph(input_graph), vbm(input_vbm), thread_num(input_thread) {
   max_vid = graph->get_node_num();
   num_vertices = max_vid;
@@ -8,10 +8,13 @@ SSSP::SSSP(MyEdgeArray* input_graph, AllVBManager* input_vbm, int input_thread)
   result.resize(max_vid);
 }
 
-void SSSP::compute_sssp(uint64_t source, double delta, MyEdgeArray* MEA) {
+void SSSP::compute_sssp(uint64_t source, double delta, GraphStore* MEA) {
   Transaction* txn = new Transaction(1, true, false, graph);
   vbm->registerROTransaction(txn);
-  auto read_ts = txn->get_read_epoch();
+  epoch_t read_ts = txn->get_read_epoch();
+#ifdef FINEGRAIN
+  Composite fg_read_ts = txn->get_read_ts();
+#endif
 
   max_vid = graph->get_node_num();
   distances.resize(max_vid);
@@ -69,7 +72,11 @@ void SSSP::compute_sssp(uint64_t source, double delta, MyEdgeArray* MEA) {
 
           ds->getReadLock();
           GraphAlgorithms::for_each_edge_with_property(
-              ds, read_ts, [&](EdgeWithIndex* edge, EdgeWithIndex* prop) {
+#ifdef FINEGRAIN
+              ds, fg_read_ts, [&](EdgeWithIndex* edge, EdgeWithIndex* prop) {
+#else
+              ds, Composite(read_ts, 0), [&](EdgeWithIndex* edge, EdgeWithIndex* prop) {
+#endif
                 auto v = edge->e & ~DELETION_MASK;
                 double w = *reinterpret_cast<double*>(&prop->properties);
 

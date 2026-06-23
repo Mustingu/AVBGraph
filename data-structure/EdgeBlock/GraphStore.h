@@ -1,22 +1,22 @@
-#ifndef MYEDGEARRAY_H
-#define MYEDGEARRAY_H
+#ifndef GRAPHSTORE_H
+#define GRAPHSTORE_H
 
 #include <mutex>
 
-#include "MyEdgeBlock.h"
+#include "data-structure/EdgeBlock/VertexEdges.h"
 
 #define INITIAL_VECTOR_SIZE 256
 
-class MEBC {
+class VertexEntry {
  public:
-  MEBC();
-  MEBC(MyEdgeBlock* eb);
-  MyEdgeBlock* eb;
+  VertexEntry();
+  VertexEntry(VertexEdges* eb);
+  VertexEdges* eb;
 };
 
-class MyEdgeArray : public VersionedTopologyInterface {
+class GraphStore : public VersionedTopologyInterface {
  public:
-  tbb::concurrent_vector<MEBC> blocks;
+  tbb::concurrent_vector<VertexEntry> blocks;
   tbb::concurrent_vector<dst_t> p_mHashMap;
   // std::vector<HashTable2> hashtables;
   std::vector<std::atomic<uint8_t>>* locks;
@@ -27,24 +27,25 @@ class MyEdgeArray : public VersionedTopologyInterface {
 
   std::atomic<int> node_num{0};
 
-  MyEdgeArray(size_t block_count);
+  GraphStore(size_t block_count);
 
   int get_node_num() { return node_num; }
 
   void SetBlockByIndex(unsigned index, unsigned _num, dst_t* _edges,
                        dst_t* _properties) {
-    blocks[index] = new MyEdgeBlock(index);
+    blocks[index] = new VertexEdges(index);
     blocks[index].eb->build(_num, _edges, _properties);
   }
 
-  void SetBlockByIndex(unsigned index, MyEdgeBlock* eb) {
+  void SetBlockByIndex(unsigned index, VertexEdges* eb) {
     blocks[index].eb = eb;
   }
-  MyEdgeBlock* GetBlockByIndex(unsigned index) const {
+  VertexEdges* GetBlockByIndex(unsigned index) const {
     return blocks[index].eb;
   }
 
   bool insert_edge_block(dst_t* edge, epoch_t epoch, Transaction* txn);
+  bool delete_edge_block(dst_t* edge, epoch_t epoch, Transaction* txn);
 
   template <typename T>
   void grow_vector_if_smaller(tbb::concurrent_vector<T>& v, size_t s,
@@ -56,4 +57,4 @@ class MyEdgeArray : public VersionedTopologyInterface {
   void Print(unsigned index) { blocks[index].eb->my_print_block(); }
 };
 
-#endif  // MYEDGEARRAY_H
+#endif  // GRAPHSTORE_H

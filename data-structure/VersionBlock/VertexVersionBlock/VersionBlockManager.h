@@ -43,6 +43,29 @@ class VersionBlockManager : public VBManagerInterface {
 
   epoch_t GetEndEpoch() { return end_epoch_; }
   VersionBlock* GetLastVB() { return vb_end; }
+
+#ifdef FINEGRAIN
+  // TVB active bitmask: bit i = tmp_vb[i] has uncommitted entries
+  uint16_t active_tvb_mask_ = 0;
+  void MarkTvbActive(epoch_t epoch)   { active_tvb_mask_ |=  (1u << (epoch & MODPM)); }
+  void MarkTvbInactive(epoch_t epoch) { active_tvb_mask_ &= ~(1u << (epoch & MODPM)); }
+  uint16_t GetActiveTvbMask() const   { return active_tvb_mask_; }
+
+  // Fine-grained: VB vector index for binary search by epoch
+  void PushVBIndex(epoch_t ts, VersionBlock* vb) {
+    vb_index_.emplace_back(ts, vb);
+  }
+  VersionBlock* find_vb(epoch_t ts) {
+    if (vb_index_.empty()) return nullptr;
+    auto it = std::upper_bound(
+        vb_index_.begin(), vb_index_.end(), ts,
+        [](epoch_t v, const std::pair<epoch_t, VersionBlock*>& p) {
+          return v < p.first;
+        });
+    return it == vb_index_.begin() ? nullptr : (--it)->second;
+  }
+#endif
+
   TmpVersionBlock tvb_array[MAXSIMULBATCH];
 
  private:
@@ -57,6 +80,9 @@ class VersionBlockManager : public VBManagerInterface {
   // VersionBlock* vb_array[MAXSIMULBATCH];
   epoch_t end_epoch_ = 0;
   VersionBlock *vb_start, *vb_end;
+#ifdef FINEGRAIN
+  std::vector<std::pair<epoch_t, VersionBlock*>> vb_index_;
+#endif
 
   // void allocVersionBlock(epoch_t ts, VersionBlock*& vb, Transaction* txn);
   // void allocTVersionBlock(epoch_t ts, TmpVersionBlock*& vb, Transaction*

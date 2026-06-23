@@ -1,0 +1,301 @@
+# AVBGraph
+
+In-memory transactional graph storage with epoch-based MVCC. Supports coarse-grained (epoch) and fine-grained (intra-epoch) snapshot isolation for consistent analytical queries on evolving graphs.
+
+## Build
+
+```bash
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j$(nproc)
+```
+
+**Prerequisites**: C++17, CMake ≥ 3.17, Intel TBB, OpenMP.
+
+## Core API
+
+### AllVBManager — Epoch & Transaction Manager
+
+The central coordinator. Manages epoch assignment, publication, and transaction lifecycle.
+
+```cpp
+#include "data-structure/VersionBlock/AllVBManager.h"
+
+// on=false: manual epoch management (no background thread)
+// on=true:  background thread auto-publishes epochs
+auto* vbm = new AllVBManager(/*max_threads=*/32, /*on=*/false);
+```
+
+| Method | Description |
+|--------|-------------|
+| `registerTransaction(txn)` | Assign epoch + VBData to a write transaction. Blocks if too many in-flight epochs. |
+| `registerROTransaction(txn)` | Set read epoch for a read-only transaction. Returns latest committed epoch. |
+| `deregisterTransaction()` | Mark write transaction complete (thread-local). |
+| `deregisterROTransaction()` | Mark read transaction complete (thread-local). |
+| `commitVersionBlock(epoch)` | Publish all epochs up to (but not including) `epoch`. Advances `read_epoch_`. |
+| `NoMoreTxn()` | Signal no more writes; background thread can finalize remaining epochs. |
+| `getCurrentEpoch()` | Return current write epoch (`cur_`). |
+| `getCurrentReadEpoch()` | Return latest committed read epoch (thread-safe). |
+
+### GraphStore — Vertex Container
+
+Holds all vertices. Each vertex is a `VertexEdges` block.
+
+```cpp
+#include "data-structure/EdgeBlock/GraphStore.h"
+
+auto* graph = new GraphStore(/*num_vertices=*/N + 16);
+graph->node_num.store(N);         // set actual vertex count
+
+// Pre-allocate a vertex
+auto* eb = new VertexEdges(v);    // v = vertex ID
+eb->build(0, nullptr, nullptr);  // empty adjacency
+graph->blocks[v].eb = eb;
+```
+
+| Method | Description |
+|--------|-------------|
+| `GetBlockByIndex(v)` | Return `VertexEdges*` for vertex `v`. |
+| `check_degree(v, epoch)` | Return out-degree of vertex `v` at given epoch (thread-safe). |
+| `get_node_num()` | Return number of vertices. |
+| `new_vertex()` | Allocate a new vertex, return its ID. |
+
+### VertexEdges — Per-Vertex Adjacency
+
+Holds the Primary Adjacency (PA), Write Buffer (tmp_item), and VersionBlock chain for one vertex.
+
+```cpp
+auto* ds = graph->GetBlockByIndex(v);
+ds->getReadLock();               // acquire read lock
+
+// ... iterate edges ...
+
+ds->unleashReadLock();           // release lock
+```
+
+| Method | Description |
+|--------|-------------|
+| `getReadLock()` / `unleashReadLock()` | Acquire/release read lock (tbb::spin_rw_mutex). |
+| `build(n, edges, props)` | Initialize with `n` edges and properties. |
+| `for_each_edge_sorted(epoch, cb)` | Iterate visible edges in sorted dst order (merges PA + tmp). |
+
+### Transaction — Read/Write Handle
+
+```cpp
+#include "data-structure/Transaction/Transaction.h"
+
+// Write transaction
+Transaction txn(/*version=*/1, /*read_only=*/false, /*write_only=*/true, graph);
+vbm->registerTransaction(&txn);
+
+dst_t e[] = {(dst_t)src, (dst_t)dst, (dst_t)weight};
+txn.insertedge(e);       // insert or update edge
+txn.deletedge(e);        // logical-delete edge (src, dst only)
+txn.commit();            // commit (FG: releases deferred locks)
+vbm->deregisterTransaction();
+
+// Read-only transaction
+Transaction ro(1, true, false, graph);
+vbm->registerROTransaction(&ro);
+epoch_t snap = ro.get_read_epoch();    // coarse snapshot epoch
+// In fine-grained mode:
+// Composite fg = ro.get_read_ts();   // (read_epoch_+1, intra)
+vbm->deregisterROTransaction();
+```
+
+| Method | Description |
+|--------|-------------|
+| `insertedge(edge)` | Insert or update edge `{src, dst, weight}`. |
+| `deletedge(edge)` | Logical-delete edge `{src, dst}` (DELETION_MASK). |
+| `commit()` | Commit transaction. FG mode: fetch intra_c, release deferred write locks. |
+| `get_read_epoch()` | Return coarse read snapshot epoch. |
+| `get_read_ts()` | Return fine-grained composite `(coarse, intra)` (FG only). |
+| `get_intra_c()` | Lazy-fetch intra-epoch timestamp from VBData (FG only). |
+
+## Edge Iteration
+
+All iteration requires holding the read lock on the `VertexEdges` block.
+
+```cpp
+auto* ds = graph->GetBlockByIndex(v);
+ds->getReadLock();
+Composite snap(epoch, 0);   // or fg_read_ts in FG mode
+
+// 1. Basic: iterate all visible out-edges
+GraphAlgorithms::for_each_edge(ds, snap,
+    [](EdgeWithIndex* e) {
+        dst_t neighbor = e->e & ~DELETION_MASK;  // strip deletion bit
+    }, nullptr);
+
+// 2. With edge weights / properties
+GraphAlgorithms::for_each_edge_with_property(ds, snap,
+    [](EdgeWithIndex* e, EdgeWithIndex* p) {
+        dst_t dst = e->e & ~DELETION_MASK;
+        double w  = *reinterpret_cast<double*>(&p->properties);
+    });
+
+// 3. Early-exit: stops when callback returns true
+GraphAlgorithms::for_each_edge_condition(ds, snap,
+    [](EdgeWithIndex* e) -> bool {
+        return /* found target */ false;
+    });
+
+// 4. Sorted by dst (merges sorted PA with ≤64 tmp entries)
+//    Used by CDLP and LCC for O(deg) ordered scans
+ds->for_each_edge_sorted(epoch,
+    [](EdgeWithIndex* e) { /* visited in ascending dst order */ });
+
+ds->unleashReadLock();
+```
+
+## Algorithms
+
+All algorithms follow the pattern: create RO transaction → iterate edges → produce result. Constructor signatures are `(GraphStore*, AllVBManager*, thread_num)`.
+
+```cpp
+// PageRank
+PageRank pr(graph, vbm, 64);
+pr.compute_pagerank(/*iterations=*/10, /*damping=*/0.85);
+auto* scores = pr.get_raw_result();    // vector<double>
+
+// BFS (direction-optimizing: top-down + bottom-up)
+BFS bfs(graph, vbm, 64);
+bfs.bfs(source_vertex);
+auto* dists = bfs.get_raw_result();    // vector<int64_t>
+
+// SSSP (Δ-stepping)
+SSSP sssp(graph, vbm, 64);
+sssp.compute_sssp(source_vertex, /*delta=*/2.0);
+auto* sssp_dist = sssp.get_raw_result();  // vector<double>
+
+// LCC (binary-search triangle counting)
+LCC lcc(graph, vbm, 64);
+lcc.compute_lcc();
+auto* lcc_scores = lcc.get_raw_result();  // vector<double>
+
+// WCC (Afforest label propagation)
+WCC wcc(graph, vbm, 64);
+wcc.compute_wcc();
+auto* components = wcc.get_raw_result();  // vector<uint64_t>
+
+// CDLP (label propagation, run-length counting on sorted edges)
+CDLP cdlp(graph, vbm, 64);
+cdlp.compute_cdlp(/*max_iterations=*/10);
+auto* communities = cdlp.get_raw_result();  // vector<uint64_t>
+```
+
+Each algorithm provides `get_result()` returning `vector<pair<uint64_t, T>>` for logical-to-physical ID mapping (when `MEA != nullptr`).
+
+## Full Example: Build Graph + Run PageRank
+
+```cpp
+#include "data-structure/EdgeBlock/GraphStore.h"
+#include "data-structure/VersionBlock/AllVBManager.h"
+#include "data-structure/Transaction/Transaction.h"
+#include "algorithm/PageRank.h"
+
+int main() {
+    int N = 1000;
+    auto* graph = new GraphStore(N + 16);
+    auto* vbm   = new AllVBManager(32, false);
+    graph->node_num.store(N);
+
+    // Init vertices
+    for (int v = 0; v < N; v++) {
+        auto* eb = new VertexEdges(v);
+        eb->build(0, nullptr, nullptr);
+        graph->blocks[v].eb = eb;
+    }
+
+    // Insert edges at epoch 1
+    for (auto [src, dst, w] : edges) {
+        Transaction txn(1, false, true, graph);
+        vbm->registerTransaction(&txn);
+        dst_t e[] = {(dst_t)src, (dst_t)dst, (dst_t)w};
+        txn.insertedge(e);
+        txn.commit();
+        vbm->deregisterTransaction();
+    }
+
+    // Publish: make edges visible to readers
+    vbm->commitVersionBlock(2);
+
+    // Run PageRank
+    PageRank pr(graph, vbm, 64);
+    pr.compute_pagerank(10, 0.85);
+    auto* scores = pr.get_raw_result();
+
+    delete graph;
+    delete vbm;
+}
+```
+
+## CLI: avb_benchmark
+
+Pre-built benchmark driver for loading graphs and running algorithms.
+
+```bash
+./avb_benchmark --prefile dota -a pr -r 64
+```
+
+### Input Options (mutually exclusive)
+
+| Flag | Description |
+|------|-------------|
+| `--prefile dota` | Use Dota-League dataset (`dota-league.e`) |
+| `--prefile graph24` | Use Graph500-24 dataset |
+| `-f, --file <path>` | Custom `.e` edge list file |
+
+### Algorithm
+
+| Flag | Description |
+|------|-------------|
+| `-a, --algorithm pr` | Run PR → BFS → SSSP → LCC → WCC → CDLP pipeline |
+| `-a, --algorithm sum` | Run CheckSum only (weight verification) |
+| *(omit -a)* | Write-only benchmark (no algorithms) |
+
+### Threading
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-r, --read-thread N` | 64 | Read thread count |
+| `--write-thread N` | 64 | Write thread count |
+
+### Other Options
+
+| Flag | Description |
+|------|-------------|
+| `-e, --edge-limit N` | Limit input to first N edges |
+| `-p, --permute` | Shuffle input edge order |
+| `-c, --check` | Verify CheckSum against ground truth |
+| `--con` | Concurrent read/write test mode |
+| `-s, --single` | Single-task multi-threaded read mode |
+| `--bfs-root N` | BFS source vertex |
+| `--csr` | Run CSR baseline (bypasses AVB) |
+| `-g, --gen-and-output` | Generate data and exit |
+
+### Usage Examples
+
+```bash
+# Full pipeline with Dota dataset
+./avb_benchmark --prefile dota -a pr -r 64
+
+# Write-only benchmark with custom graph
+./avb_benchmark -f /path/to/graph.e --write-thread 32
+
+# Concurrent read/write stress test
+./avb_benchmark --prefile dota --con -r 64 --write-thread 20
+
+# CSR baseline comparison
+./avb_benchmark --prefile dota --csr --bfs-root 0
+```
+
+## Configuration
+
+Edit `utils/utils.h`:
+
+```cpp
+#define FINEGRAIN     // Fine-grained timestamps (default: on)
+// #define TVB_STATS  // TVB scan statistics per iteration
+// #define PR_DEBUG   // PageRank per-iteration timestamp output
+```

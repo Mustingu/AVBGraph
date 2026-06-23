@@ -153,7 +153,17 @@ class Transaction {
   bool is_write_only() const { return write_only_; };
   void set_read_epoch(epoch_t epoch) { read_epoch_ = epoch; };
   void set_epoch(epoch_t epoch) { epoch_ = epoch; };
+#ifdef FINEGRAIN
+  Composite get_read_ts() const { return read_ts_; }
+  void set_read_ts(Composite ts) { read_ts_ = ts; }
+#endif
   void set_vb_data(VBDataInterface* vb_data) { vb_data_ = vb_data; };
+  intra_t get_intra_c() {
+#ifdef FINEGRAIN
+    if (!intra_c_) intra_c_ = vb_data_->fetch_add_intra();
+#endif
+    return intra_c_;
+  }
   void write_lock_pushback(TmpVersionBlock* vb) {
     // VersionData_ptr_.push_back(val);
     // version_blocks_.push_back(vb);
@@ -207,6 +217,7 @@ class Transaction {
   }
   void execute();
   void insertedge(dst_t* edge);
+  void deletedge(dst_t* edge);
 
   // void getReadLock() { ds->getReadLock(); }
   // void unleashReadLock() { ds->unleashReadLock(); }
@@ -218,17 +229,21 @@ class Transaction {
 
   void commit();
 
-  void AddEB(MyEdgeBlockInterface* eb) { EB_vec_.push_back(eb); }
+  void AddEB(VertexEdgesInterface* eb) { EB_vec_.push_back(eb); }
 
  private:
   bool read_only_, write_only_;
   unsigned insert_cnt_ = 0;
   version_t version_;
   epoch_t read_epoch_, epoch_;
+  intra_t intra_c_ = 0;  // fine-grained intra-epoch timestamp
+#ifdef FINEGRAIN
+  Composite read_ts_{0, 0};  // fine-grained read timestamp
+#endif
   std::vector<Transaction::insert_triple>* edges_to_insert;
   VersionedTopologyInterface* ds;
   Transaction::insert_triple one_edge_;
-  std::vector<MyEdgeBlockInterface*> EB_vec_;
+  std::vector<VertexEdgesInterface*> EB_vec_;
 
  public:
   VBDataInterface* vb_data_;
