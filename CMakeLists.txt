@@ -53,15 +53,15 @@ set(AVB_SOURCES
 add_library(AVB_Core STATIC ${AVB_SOURCES})
 
 # 使用我们自动收集到的所有路径
-target_include_directories(AVB_Core PUBLIC 
+target_include_directories(AVB_Core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR} # 根目录通常也需要
     ${ALL_INC_DIRS}
 )
 
 # 链接依赖
-target_link_libraries(AVB_Core PUBLIC 
-    TBB::tbb 
-    OpenMP::OpenMP_CXX 
+target_link_libraries(AVB_Core PUBLIC
+    TBB::tbb
+    OpenMP::OpenMP_CXX
     Threads::Threads
 )
 
@@ -70,7 +70,30 @@ if(TCMALLOC_LIB)
 endif()
 
 # 编译选项
-target_compile_options(AVB_Core PRIVATE 
+target_compile_options(AVB_Core PRIVATE
+     -Wno-deprecated-declarations -Wno-deprecated -g -fopenmp -O3 -std=c++17 -lpthread -ltbb -ltcmalloc -DJEMALLOC_NO_DEMANGLE
+)
+
+# =========================================================
+# 目标 A-coarse: AVB_Core_coarse（无 FINEGRAIN，实验1 对照口径）
+# utils/utils.h 的 FINEGRAIN 由 AVB_COARSE 宏关闭。
+# 仅在本工程以目标形式添加；不动默认 fine 目标。
+# =========================================================
+add_library(AVB_Core_coarse STATIC ${AVB_SOURCES})
+target_include_directories(AVB_Core_coarse PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${ALL_INC_DIRS}
+)
+target_compile_definitions(AVB_Core_coarse PUBLIC AVB_COARSE)
+target_link_libraries(AVB_Core_coarse PUBLIC
+    TBB::tbb
+    OpenMP::OpenMP_CXX
+    Threads::Threads
+)
+if(TCMALLOC_LIB)
+    target_link_libraries(AVB_Core_coarse PUBLIC ${TCMALLOC_LIB})
+endif()
+target_compile_options(AVB_Core_coarse PRIVATE
      -Wno-deprecated-declarations -Wno-deprecated -g -fopenmp -O3 -std=c++17 -lpthread -ltbb -ltcmalloc -DJEMALLOC_NO_DEMANGLE
 )
 

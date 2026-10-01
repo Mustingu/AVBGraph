@@ -21,6 +21,9 @@ class GraphStore : public VersionedTopologyInterface {
   // std::vector<HashTable2> hashtables;
   std::vector<std::atomic<uint8_t>>* locks;
   std::mutex growing_vector_mutex;
+  // Vertex IDs, vector construction, and publication of blocks[v].eb must be
+  // one operation. Existing-edge writes do not take this lock.
+  std::mutex vertex_creation_mutex;
   std::atomic<uint8_t> locks2;
   size_t block_count;
   uint8_t unlocked_m = 0;

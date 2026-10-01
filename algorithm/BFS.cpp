@@ -1,11 +1,15 @@
 #include "BFS.h"
 
+#include <cstdlib>
+#include <iostream>
+
 BFS::BFS(GraphStore* input_graph, AllVBManager* input_vbm, int input_thread)
     : graph(input_graph), vbm(input_vbm), thread_num(input_thread) {
   max_vid = graph->get_node_num();
   num_vertices = max_vid;
   distances.resize(max_vid);
   result.resize(max_vid);
+  stats_.enabled = false;
 }
 
 int64_t BFS::init_distance(Transaction& txn) {
@@ -18,12 +22,35 @@ int64_t BFS::init_distance(Transaction& txn) {
     } else [[likely]] {
       total_edge_num += out_degree;
       distances[n] = out_degree != 0 ? -out_degree : -1;
+      if (stats_.enabled) {
+        stats_.init_vertices.fetch_add(1, std::memory_order_relaxed);
+        stats_.init_edges.fetch_add(out_degree, std::memory_order_relaxed);
+      }
     }
   }
   return total_edge_num / 2;
 }
 
 void BFS::bfs(uint64_t root, int alpha, int beta, GraphStore* MEA) {
+  stats_.td_calls.store(0);
+  stats_.bu_calls.store(0);
+  stats_.direction_switches.store(0);
+  stats_.td_ms.store(0);
+  stats_.bu_ms.store(0);
+  stats_.init_vertices.store(0);
+  stats_.init_edges.store(0);
+  stats_.td_vertices.store(0);
+  stats_.td_edge_checks.store(0);
+  stats_.td_discoveries.store(0);
+  stats_.td_repeated.store(0);
+  stats_.bu_candidates.store(0);
+  stats_.bu_edge_checks.store(0);
+  stats_.bu_early_stops.store(0);
+  stats_.bu_misses.store(0);
+  stats_.bu_locks.store(0);
+  stats_.bu_success_checks.store(0);
+  stats_.bu_max_success_checks.store(0);
+
   Transaction* txn = new Transaction(1, true, false, graph);
   vbm->registerROTransaction(txn);
   epoch_t read_ts = txn->get_read_epoch();
@@ -55,7 +82,9 @@ void BFS::bfs(uint64_t root, int alpha, int beta, GraphStore* MEA) {
     // std::cout << scout_count << " " << edges_to_check << " " << alpha << " "
     //           << beta << '\n';
     if (scout_count > edges_to_check / alpha) {
-      // std::cout << "do_bfs_BUStep\n";
+      if (stats_.enabled) {
+        stats_.direction_switches.fetch_add(1, std::memory_order_relaxed);
+      }
       int64_t awake_count, old_awake_count;
       // Queue to Bitmap conversion
 #pragma omp parallel for
@@ -70,6 +99,7 @@ void BFS::bfs(uint64_t root, int alpha, int beta, GraphStore* MEA) {
         // std::cout << "do_bfs_BUStep\n";
         old_awake_count = awake_count;
         awake_count = do_bfs_BUStep(*txn, distance, front, curr);
+        if (stats_.enabled) stats_.bu_calls.fetch_add(1, std::memory_order_relaxed);
         front.swap(curr);
         distance++;
       } while ((awake_count >= old_awake_count) ||
@@ -89,6 +119,7 @@ void BFS::bfs(uint64_t root, int alpha, int beta, GraphStore* MEA) {
       // std::cout << "do_bfs_TDStep\n";
       edges_to_check -= scout_count;
       scout_count = do_bfs_TDStep(*txn, distance, queue);
+      if (stats_.enabled) stats_.td_calls.fetch_add(1, std::memory_order_relaxed);
       queue.slide_window();
       distance++;
     }
@@ -113,10 +144,34 @@ void BFS::bfs(uint64_t root, int alpha, int beta, GraphStore* MEA) {
 
   vbm->deregisterROTransaction();
 
-  // std::cout << root << " " << alpha << " " << beta << " " << MEA << '\n';
+  if (stats_.enabled) {
+    const auto bu_success = stats_.bu_early_stops.load();
+    const auto bu_avg = bu_success ? static_cast<double>(stats_.bu_success_checks.load()) / bu_success : 0.0;
+    std::cerr << "AVB_BFS_STATS init_vertices=" << stats_.init_vertices.load()
+              << " init_edges=" << stats_.init_edges.load()
+              << " td_calls=" << stats_.td_calls.load()
+              << " bu_calls=" << stats_.bu_calls.load()
+              << " direction_switches=" << stats_.direction_switches.load()
+              << " td_vertices=" << stats_.td_vertices.load()
+              << " td_edge_checks=" << stats_.td_edge_checks.load()
+              << " td_discoveries=" << stats_.td_discoveries.load()
+              << " td_repeated=" << stats_.td_repeated.load()
+              << " bu_candidates=" << stats_.bu_candidates.load()
+              << " bu_edge_checks=" << stats_.bu_edge_checks.load()
+              << " bu_early_stops=" << bu_success
+              << " bu_misses=" << stats_.bu_misses.load()
+              << " bu_locks=" << stats_.bu_locks.load()
+              << " bu_avg_success_checks=" << bu_avg
+              << " bu_max_success_checks=" << stats_.bu_max_success_checks.load()
+              << "\n";
+  }
 
+  // std::cout << root << " " << alpha << " " << beta << " " << MEA << '\\n';
+
+  // The driver writes AlgorithmResult after timing. Retain the old standalone
+  // output only when explicitly requested at compile time.
+#ifdef AVB_LEGACY_RESULT_OUTPUT
   if (MEA != nullptr) {
-    std::cout << "output bfs\n";
     std::vector<std::tuple<uint64_t, int64_t>> sorted_result(max_vid);
 #pragma omp parallel for
     for (uint64_t logical_id = 0; logical_id < max_vid; logical_id++) {
@@ -137,6 +192,7 @@ void BFS::bfs(uint64_t root, int alpha, int beta, GraphStore* MEA) {
     }
     output_file.close();
   }
+#endif
   // #pragma omp parallel for
   //   for (uint64_t logical_id = 0; logical_id < max_vid; logical_id++) {
   //     std::string_view payload = txn.get_vertex(
@@ -171,13 +227,19 @@ int64_t BFS::do_bfs_TDStep(Transaction& txn, int64_t distance,
 #pragma omp for schedule(dynamic, 64)
     for (auto q_iter = queue.begin(); q_iter < queue.end(); q_iter++) {
       int64_t u = *q_iter;
+      if (stats_.enabled) {
+        stats_.td_vertices.fetch_add(1, std::memory_order_relaxed);
+      }
 
       auto ds = graph->GetBlockByIndex(u);
       ds->getReadLock();
 
       GraphAlgorithms::for_each_edge(
-          ds, Composite(txn.get_read_epoch(), 0),
+          ds, Composite(txn.get_read_epoch(), INTRA_MAX),
           [&](EdgeWithIndex* edge) {
+            if (stats_.enabled) {
+              stats_.td_edge_checks.fetch_add(1, std::memory_order_relaxed);
+            }
             auto dst = edge->e & ~DELETION_MASK;
             // std::cout << "dst " << dst << '\n';
             int64_t curr_val = distances[dst];
@@ -185,8 +247,10 @@ int64_t BFS::do_bfs_TDStep(Transaction& txn, int64_t distance,
                 gapbs::compare_and_swap(distances[dst], curr_val, distance)) {
               // Add to local queue buffer
               lqueue.push_back(dst);
-              // Note: This requires a thread-local queue or synchronization
+              stats_.td_discoveries.fetch_add(1, std::memory_order_relaxed);
               scout_count += -curr_val;
+            } else if (stats_.enabled) {
+              stats_.td_repeated.fetch_add(1, std::memory_order_relaxed);
             }
           },
           nullptr);
@@ -203,6 +267,8 @@ int64_t BFS::do_bfs_BUStep(Transaction& txn, int64_t distance,
   int64_t awake_count = 0;
   next.reset();
 
+  uint64_t local_checks = 0;
+  uint64_t local_candidates = 0;
 #pragma omp parallel for reduction(+ : awake_count)
   for (uint64_t u = 0; u < max_vid; u++) {
     // std::cout << "do" + std::to_string(u) + '\n';
@@ -211,11 +277,18 @@ int64_t BFS::do_bfs_BUStep(Transaction& txn, int64_t distance,
     if (distances[u] < 0) {  // the node has not been visited yet
       auto ds = graph->GetBlockByIndex(u);
       ds->getReadLock();
+      if (stats_.enabled) {
+        stats_.bu_candidates.fetch_add(1, std::memory_order_relaxed);
+        stats_.bu_locks.fetch_add(1, std::memory_order_relaxed);
+      }
 
+      uint64_t checked = 0;
       bool found_neighbor = false;
       GraphAlgorithms::for_each_edge_condition(
-          ds, Composite(txn.get_read_epoch(), 0), [&](EdgeWithIndex* edge) -> bool {
+          ds, Composite(txn.get_read_epoch(), INTRA_MAX), [&](EdgeWithIndex* edge) -> bool {
+            if (stats_.enabled) ++checked;
             if (front.get_bit(edge->e & ~DELETION_MASK)) {
+              found_neighbor = true;
               distances[u] = distance;
               awake_count++;
               next.set_bit(u);
@@ -228,6 +301,18 @@ int64_t BFS::do_bfs_BUStep(Transaction& txn, int64_t distance,
           });
 
       ds->unleashReadLock();
+      if (stats_.enabled) {
+        stats_.bu_edge_checks.fetch_add(checked, std::memory_order_relaxed);
+        if (found_neighbor) {
+          stats_.bu_early_stops.fetch_add(1, std::memory_order_relaxed);
+          stats_.bu_success_checks.fetch_add(checked, std::memory_order_relaxed);
+          uint64_t old = stats_.bu_max_success_checks.load(std::memory_order_relaxed);
+          while (old < checked && !stats_.bu_max_success_checks.compare_exchange_weak(
+              old, checked, std::memory_order_relaxed)) {}
+        } else {
+          stats_.bu_misses.fetch_add(1, std::memory_order_relaxed);
+        }
+      }
     }
   }
   return awake_count;

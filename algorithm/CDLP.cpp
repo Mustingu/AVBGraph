@@ -23,10 +23,16 @@ void CDLP::compute_cdlp(uint64_t max_iterations, GraphStore* MEA) {
   max_vid = graph->get_node_num();
   labels.resize(max_vid);
 
-  // Initialize: each vertex gets its own ID as label
+  // Initialize: each vertex gets its own EXTERNAL id as label. The official
+  // convention breaks propagation ties by comparing label values numerically
+  // against every OTHER vertex's label, so this must operate in external-id
+  // space throughout — internal ids are assigned in load order and generally
+  // do not preserve external-id relative order, which would converge the
+  // propagation to a different (wrong) partition, not just mislabel the
+  // output.
 #pragma omp parallel for
   for (uint64_t v = 0; v < max_vid; v++)
-    labels[v] = v;
+    labels[v] = graph->p_mHashMap[v];
 
   std::vector<uint64_t> next_labels(max_vid);
   std::atomic<bool> changed(true);
@@ -34,36 +40,50 @@ void CDLP::compute_cdlp(uint64_t max_iterations, GraphStore* MEA) {
   for (uint64_t iter = 0; iter < max_iterations && changed.load(); iter++) {
     changed.store(false);
 
-#pragma omp parallel for schedule(dynamic, 64)
-    for (uint64_t v = 0; v < max_vid; v++) {
-      uint64_t deg = graph->check_degree(v, read_ts);
-      if (deg == 0) { next_labels[v] = labels[v]; continue; }
+#pragma omp parallel
+    {
+      // Thread-local scratch buffer for one vertex's neighbor labels.
+      std::vector<uint64_t> nbr_labels;
+#pragma omp for schedule(dynamic, 64)
+      for (uint64_t v = 0; v < max_vid; v++) {
+        uint64_t deg = graph->check_degree(v, read_ts);
+        if (deg == 0) { next_labels[v] = labels[v]; continue; }
 
-      // Run-length counting on sorted neighbors (avoids hash map overhead)
-      uint64_t best_label = labels[v];
-      uint64_t best_count = 0;
-      uint64_t run_label = ~0ull, run_count = 0;
-      auto* ds = graph->GetBlockByIndex(v);
-      ds->getReadLock();
-      ds->for_each_edge_sorted(read_ts,
-          [&](EdgeWithIndex* edge) {
-            uint64_t lbl = labels[edge->e & ~DELETION_MASK];
-            if (lbl == run_label) { run_count++; }
-            else {
-              if (run_count > best_count || (run_count == best_count && run_label < best_label))
-                { best_label = run_label; best_count = run_count; }
-              run_label = lbl; run_count = 1;
-            }
-          });
-      // Flush last run
-      if (run_count > best_count || (run_count == best_count && run_label < best_label))
-        { best_label = run_label; best_count = run_count; }
-      ds->unleashReadLock();
-      if (best_label != labels[v]) {
-        changed.store(true);
-        next_labels[v] = best_label;
-      } else {
-        next_labels[v] = labels[v];
+        // for_each_edge_sorted orders by neighbor INTERNAL id, not by label
+        // value, so equal labels are not guaranteed adjacent — collect then
+        // sort the actual label values before run-length counting, or
+        // repeated labels get undercounted (silently corrupting tie-breaks).
+        nbr_labels.clear();
+        nbr_labels.reserve(deg);
+        auto* ds = graph->GetBlockByIndex(v);
+        ds->getReadLock();
+        ds->for_each_edge_sorted(read_ts,
+            [&](EdgeWithIndex* edge) {
+              nbr_labels.push_back(labels[edge->e & ~DELETION_MASK]);
+            });
+        ds->unleashReadLock();
+        std::sort(nbr_labels.begin(), nbr_labels.end());
+
+        uint64_t best_label = nbr_labels[0];
+        uint64_t best_count = 0;
+        uint64_t i = 0;
+        while (i < nbr_labels.size()) {
+          uint64_t j = i;
+          while (j < nbr_labels.size() && nbr_labels[j] == nbr_labels[i]) j++;
+          uint64_t count = j - i;
+          if (count > best_count) {
+            best_count = count;
+            best_label = nbr_labels[i];
+          }
+          i = j;
+        }
+
+        if (best_label != labels[v]) {
+          changed.store(true);
+          next_labels[v] = best_label;
+        } else {
+          next_labels[v] = labels[v];
+        }
       }
     }
 

@@ -60,12 +60,18 @@ unsigned VertexEdges::Transform(TmpVersionBlock* tvb, VersionBlock* vb) {
   for (; i < n && !tvb->tmp_entry_[indices[i]].last_epoch; i++) {
     auto& tvb_item = tvb->tmp_entry_[indices[i]];
 
-    if (is_delete(tvb_item.edge)) { vb_alloc++; continue; }  // handled below
+    if (is_delete(tvb_item.edge)) {
+      // Partition deletes to the front of [0, i0) so the third loop processes
+      // them directly (no re-scan / is_delete check).
+      std::swap(indices[i], indices[vb_alloc]);
+      vb_alloc++;
+      continue;
+    }
 
     EdgeWithIndex *item_e, *item_p;
 
     if (tvb_item.merge_times != merge_times) {
-      get_edge_index2(tvb_item.edge, item_e, item_p);
+      get_edge_index2(tvb_item.edge & ~DELETION_MASK, item_e, item_p);
     } else {
       auto xid = tvb_item.offset;
       if (xid & TMPVB_MASK) {
@@ -86,8 +92,12 @@ unsigned VertexEdges::Transform(TmpVersionBlock* tvb, VersionBlock* vb) {
 #endif
       item_p->link = nullptr;
     } else {
+#ifndef FINEGRAIN
       item_p->link = reinterpret_cast<VersionBlock*>(
           (static_cast<uint64_t>(epoch) << 32) | (unsigned)-1);
+#endif
+      // FINEGRAIN: item_p->block 已装着"最新版本"的 tvb_idx,是正确值,别覆盖;
+      // 最终 pred_index 由第二循环(或后续 epoch 的 Transform)写入。
       auto next_vb = tmp_vb[tvb_item.link.block & MODPM];
       next_vb->ChangeLastIndex(tvb_item.link.index, nullptr);
     }
@@ -100,6 +110,7 @@ unsigned VertexEdges::Transform(TmpVersionBlock* tvb, VersionBlock* vb) {
   if (item_num != 0)
     vb->start_ = new EdgeWithIndex[item_num << 1];
   else {
+    vb->version_num_ = 0;  // empty VB: version_num_ must match start_==nullptr
     VBM.PushVB(edge_num_, vb);
     spin_rw_lock.unlock();
     if (tvb->tmp_entry_ != nullptr) delete[] tvb->tmp_entry_;
@@ -113,7 +124,7 @@ unsigned VertexEdges::Transform(TmpVersionBlock* tvb, VersionBlock* vb) {
   int sm = 0;
   vb->version_num_ = item_num;
 
-  i += vb_alloc;  // skip deletes handled above
+  int i0 = i;  // boundary: entries [0,i0) have last_epoch==0, [i0,n) have last_epoch!=0
   for (int j = 0; i < n; i++, j++) {
     auto& tvb_item = tvb->tmp_entry_[indices[i]];
 
@@ -128,7 +139,7 @@ unsigned VertexEdges::Transform(TmpVersionBlock* tvb, VersionBlock* vb) {
     EdgeWithIndex *item_e, *item_p;
 
     if (tvb_item.merge_times != merge_times) {
-      get_edge_index2(tvb_item.edge, item_e, item_p);
+      get_edge_index2(tvb_item.edge & ~DELETION_MASK, item_e, item_p);
     } else {
       auto xid = tvb_item.offset;
       if (xid & TMPVB_MASK) {
@@ -152,11 +163,18 @@ unsigned VertexEdges::Transform(TmpVersionBlock* tvb, VersionBlock* vb) {
                                        tvb_item.new_intra_c); // intra_inv
 
     // Update PA: new version replaces old
-    item_e->block = epoch;
-    item_e->index = tvb_item.new_intra_c;   // intra_c of the new version
-    item_p->SetPropFG(tvb_item.weight,
-                      j,                     // pred_index → this VB entry
-                      0);                    // intra_inv = 0 (not yet invalidated)
+    if (is_delete(tvb_item.edge)) {
+      // delete: PA keeps the deletion time (epoch)
+      item_e->block = epoch;
+      item_e->index = tvb_item.new_intra_c;
+      item_p->SetPropFG(0, j, 0);  // pred_index → the "existence" record
+    } else {
+      item_e->block = epoch;
+      item_e->index = tvb_item.new_intra_c;   // intra_c of the new version
+      item_p->SetPropFG(tvb_item.weight,
+                        j,                     // pred_index → this VB entry
+                        0);                    // intra_inv = 0 (not yet invalidated)
+    }
 #else
     // std::memcpy(&vb->start_[j].link, &item->link.link, sizeof(uint64_t));
     vb->start_[j].Set(tvb_item.edge & ~DELETION_MASK, (item_e->block & ~TMPVB_MASK),
@@ -179,15 +197,15 @@ unsigned VertexEdges::Transform(TmpVersionBlock* tvb, VersionBlock* vb) {
 
     // std::swap(item_p->properties, tvb_item.weight);
   }
-  // Process deletes skipped from first loop (last_epoch==0 but need VB record)
+  // Process deletes skipped from first loop (last_epoch==0 but need VB record).
+  // They were partitioned to the front [0, vb_alloc) by the first loop.
   {
-    int j = vb->version_num_;
-    int del_base = i;  // first skip position = first delete with last_epoch==0
+    int j = n - i0;  // records already written by the second loop
     for (int d = 0; d < vb_alloc; d++, j++) {
-      auto& tvb_item = tvb->tmp_entry_[indices[del_base + d]];
+      auto& tvb_item = tvb->tmp_entry_[indices[d]];
       EdgeWithIndex *item_e, *item_p;
       if (tvb_item.merge_times != merge_times) {
-        get_edge_index2(tvb_item.edge, item_e, item_p);
+        get_edge_index2(tvb_item.edge & ~DELETION_MASK, item_e, item_p);
       } else {
         auto xid = tvb_item.offset;
         if (xid & TMPVB_MASK) {
@@ -201,9 +219,9 @@ unsigned VertexEdges::Transform(TmpVersionBlock* tvb, VersionBlock* vb) {
 #ifdef FINEGRAIN
       vb->start_[j].SetEdgeFG(tvb_item.edge & ~DELETION_MASK, tvb_item.last_epoch, tvb_item.old_intra_c);
       vb->start_[j + item_num].SetPropFG(item_p->properties, tvb_item.link.index, tvb_item.new_intra_c);
-      item_e->block = epoch;
+      item_e->block = epoch;  // delete: PA keeps the deletion time
       item_e->index = tvb_item.new_intra_c;
-      item_p->SetPropFG(tvb_item.weight, j, 0);
+      item_p->SetPropFG(0, j, 0);  // pred_index → the "existence" record
 #else
       vb->start_[j].Set(tvb_item.edge & ~DELETION_MASK, (item_e->block & ~TMPVB_MASK), item_e->index);
       vb->start_[j + item_num].Set(item_p->properties, tvb_item.link.link);
@@ -211,7 +229,6 @@ unsigned VertexEdges::Transform(TmpVersionBlock* tvb, VersionBlock* vb) {
       item_p->Set(tvb_item.weight, vb);
 #endif
       vb->edge_num_--;
-      vb->version_num_++;
     }
   }
   VBM.PushVB(edge_num_, vb);
@@ -229,10 +246,9 @@ void VertexEdges::merge_tmpev_with_eb() {
   std::vector<size_t> indices(TMPNUM);
   std::iota(indices.begin(), indices.end(), 0);
   std::sort(indices.begin(), indices.end(),
-            // 捕获 vecA1 的引用 (const&)
             [this](size_t i, size_t j) {
-              // 比较索引 i 和 j 处的 'a' 属性
-              return tmp_item[i].e < tmp_item[j].e;
+              return (tmp_item[i].e & ~DELETION_MASK) <
+                     (tmp_item[j].e & ~DELETION_MASK);
             });
 
   bool new_edge = 0;
@@ -242,17 +258,27 @@ void VertexEdges::merge_tmpev_with_eb() {
     if (!capacity)
       capacity = num;
     else
-      capacity <<= 1;
+      while (capacity < num) capacity <<= 1;
 
     new_edge = 1;
     tmp_dst_ptr = reinterpret_cast<EdgeWithIndex*>(
         std::malloc(sizeof(EdgeWithIndex) * capacity * 2));
   }
+  // GC watermark: physically drop a logically-deleted edge once its deletion
+  // time is strictly older than the oldest epoch any reader still needs. Its
+  // "existence" VB has already been discarded, so no point query can chain from
+  // this PA head anymore. (While the delete is still pending, block carries
+  // TMPVB_MASK, which is >= 2^31 > any watermark, so pending deletes never drop.)
+  epoch_t oldest = g_oldest_epoch.load(std::memory_order_relaxed);
   int y = 0;
   for (int i = 0; i < edges_and_versions; i++) {
-    if (!(DELETE_FLAG & start[i].e)) {
+    bool drop = (start[i].e & DELETION_MASK) && (start[i].block < oldest);
+    if (!drop) {
       start[y + old_capacity] = start[i + old_capacity];
       start[y++] = start[i];
+    } else {
+      M.removeDestHashTableVal(start[i].e & ~DELETION_MASK);
+      num--;
     }
   }
 
@@ -261,7 +287,7 @@ void VertexEdges::merge_tmpev_with_eb() {
   y--;
   int nw = edges_and_versions - 1;
   while (x >= 0 && y >= 0) {
-    if (tmp_item[indices[x]].e > start[y].e) {
+    if ((tmp_item[indices[x]].e & ~DELETION_MASK) > (start[y].e & ~DELETION_MASK)) {
       tmp_dst_ptr[nw + capacity] = tmp_item[indices[x] + TMPNUM];
       tmp_dst_ptr[nw--] = tmp_item[indices[x--]];
     } else {
@@ -350,6 +376,7 @@ bool VertexEdges::insert_edge_block(dst_t* e, epoch_t epoch, Transaction* txn,
   auto edge = *e;
 
   unsigned offset = 0;
+  bool was_deleted = false;
 
   if (!M.getDestHashTableVal(edge, link)) {
     // edge_num_++;
@@ -365,6 +392,7 @@ bool VertexEdges::insert_edge_block(dst_t* e, epoch_t epoch, Transaction* txn,
     offset = tmp_offset | TMPVB_MASK;
   } else {
     get_edge_index(edge, item_e, item_p, offset);
+    was_deleted = (item_e->e & DELETION_MASK) != 0;
     item_e->e &= ~DELETION_MASK;  // clear stale deletion flag on re-insert
   }
 
@@ -382,9 +410,20 @@ bool VertexEdges::insert_edge_block(dst_t* e, epoch_t epoch, Transaction* txn,
   // Fine-grained: unified read of old state
   //   [0].block & ~TMPVB_MASK = coarse_c, [0].index = intra_c
   //   [1].block = pred_index (or TVB entry index if tmp), [1].index = intra_inv
-  epoch_t last_epoch = item_e->GetCoarseC();
-  unsigned last_index = item_p->block;
-  intra_t old_intra_c = item_e->index;
+  epoch_t last_epoch;
+  unsigned last_index;
+  intra_t old_intra_c;
+  if (was_deleted) {
+    // Re-insert after delete: fresh incarnation, chain to FIRST_VERSION.
+    last_epoch = 0;
+    last_index = 0;
+    old_intra_c = 0;
+  } else {
+    last_epoch = item_e->GetCoarseC();
+    last_index = item_p->block;
+    if (last_index == (unsigned)-1) last_index = FIRST_VERSION;  // 哨兵兜底:前驱在更早 VB,索引未知
+    old_intra_c = item_e->index;
+  }
 #else
   epoch_t last_epoch = is_tmp ? item_p->block : item_e->block,
           last_index = is_tmp ? item_p->index : item_e->index;
@@ -407,7 +446,7 @@ bool VertexEdges::insert_edge_block(dst_t* e, epoch_t epoch, Transaction* txn,
         txn, offset, merge_times, last_epoch, old_intra_c, intra_c);
 
     if (is_tmp && last_epoch != 0)
-      tmp_vb[epoch & MODPM]->ChangeNextIndex(last_index, epoch, tvb_idx);
+      tmp_vb[last_epoch & MODPM]->ChangeNextIndex(last_index, epoch, tvb_idx);
 
     // Update PA with fine-grained layout
     // Store current epoch in block; old coarse_c is preserved in TVB entry
@@ -487,6 +526,7 @@ bool VertexEdges::delete_edge_block(dst_t* e, epoch_t epoch, Transaction* txn,
 #ifdef FINEGRAIN
   epoch_t last_epoch = item_e->GetCoarseC();
   unsigned last_index = item_p->block;
+  if (last_index == (unsigned)-1) last_index = FIRST_VERSION;  // 哨兵兜底:前驱在更早 VB,索引未知
   intra_t old_intra_c = item_e->index;
 #else
   epoch_t last_epoch = is_tmp ? item_p->block : item_e->block,
@@ -502,16 +542,20 @@ bool VertexEdges::delete_edge_block(dst_t* e, epoch_t epoch, Transaction* txn,
 #ifdef FINEGRAIN
   {
     intra_t intra_c = txn->get_intra_c();
+    // Mark the delete on the TVB entry's edge so is_delete(tvb_item.edge) works.
+    dst_t del_edge[2] = {edge | DELETION_MASK, e[1]};
     unsigned tvb_idx = vb->InsertVersion(
-        e, last_epoch, last_index,
+        del_edge, last_epoch, last_index,
         reinterpret_cast<VersionBlock*>(static_cast<uint64_t>(last_epoch) << 32 | last_index),
         txn, offset, merge_times, last_epoch, old_intra_c, intra_c);
     if (is_tmp && last_epoch != 0)
-      tmp_vb[epoch & MODPM]->ChangeNextIndex(last_index, epoch, tvb_idx);
+      tmp_vb[last_epoch & MODPM]->ChangeNextIndex(last_index, epoch, tvb_idx);
     item_e->e |= DELETION_MASK;
+    // PA keeps the deletion time (epoch) as the current state; is_tmp marks it
+    // pending. The re-insert detects DELETION_MASK and chains to FIRST_VERSION.
     item_e->block = epoch | TMPVB_MASK;
     item_e->index = intra_c;
-    item_p->block = tvb_idx;
+    item_p->block = 0;
     item_p->index = 0;
   }
   txn->AddEB(this);
@@ -614,32 +658,6 @@ double VertexEdges::getSum(
   }
   return sm;
 }
-
-/*
-bool delete_edge(dst_t e, version_t version) {
-  assert(has_space_to_delete_edge());
-
-  auto ptr = find_upper_bound(start, start + edges_and_versions, e);
-  if (ptr == start + edges_and_versions ||
-      make_unversioned(*ptr) != e) {  // Edge does not exist
-    return false;
-  } else if (is_versioned(*ptr)) {
-    int offset = ptr - start;
-    int property_offset = offset - count_versions_before(offset);
-    char* property = properties_start() + property_offset * property_size;
-    EdgeVersionRecord vr{make_unversioned(*ptr), ptr + 1, property, true,
-                         property_size};
-    vr.write(version, DELETION, nullptr);
-    return true;
-  } else {
-    memmove((char*)(ptr + 2), ptr + 1,
-            (start + edges_and_versions - ptr - 1) * sizeof(dst_t));
-    *ptr |= VERSION_MASK;
-    *(ptr + 1) = version | DELETION_MASK;
-    edges_and_versions += 1;
-    return true;
-  }
-}*/
 
 dst_t* VertexEdges::find_upper_bound(dst_t* start, dst_t* end, dst_t value) {
   auto l = 0;

@@ -11,6 +11,9 @@
 
 #define MIN_VERSION_UPDATER_INTERVAL 100
 
+// GC watermark (see declaration in utils/utils.h). Owned by the GC path here.
+std::atomic<epoch_t> g_oldest_epoch{0};
+
 void XorShiftRandom::seed(uint64_t s) {
   state = s ? s : 1;  // state不能为0
 }
@@ -40,24 +43,27 @@ epoch_t AllVBManager::getMinActiveVersion() { return min_epoch; }
 
 void AllVBManager::update_min_version() {
   min_read_epoch = read_epoch_;
-  epoch_t min1 =
-      std::accumulate(active_read_epochs.begin(), active_read_epochs.end(),
-                      numeric_limits<epoch_t>::max(),
-                      [](epoch_t a, epoch_t b) { return std::min(a, b); });
+  epoch_t min1 = numeric_limits<epoch_t>::max();
+  for (unsigned i = 0; i < max_threads; ++i) {
+    min1 = std::min(
+        min1, active_read_epochs[i].load(std::memory_order_acquire));
+  }
 
   min_read_epoch = std::min(min_read_epoch, min1);
 
   auto last = min_epoch;
   min_epoch = (cur_ + no_more_txn_);
-  auto min2 =
-      std::accumulate(active_transactions.begin(), active_transactions.end(),
-                      numeric_limits<epoch_t>::max(),
-                      [](epoch_t a, epoch_t b) { return std::min(a, b); });
+  epoch_t min2 = numeric_limits<epoch_t>::max();
+  for (unsigned i = 0; i < max_threads; ++i) {
+    min2 = std::min(
+        min2, active_transactions[i].load(std::memory_order_acquire));
+  }
 
   min_epoch = std::min(min_epoch, min2);
   if (min_epoch < last && min2 != numeric_limits<epoch_t>::max()) {
-    // std::cout << "yes\n";
-    std::cout << "yes " << last << " " << min_epoch << '\n';
+    // A lagging updater must never move the GC watermark backwards.  This
+    // used to print every correction, which puts synchronous stdout I/O on a
+    // transaction-manager hot path during benchmark runs.
     min_epoch = last;
   }
 }
@@ -74,6 +80,12 @@ void AllVBManager::GC() {
     delete vb_que_.front();
     vb_que_.pop();
   }
+  // Advance the GC watermark. VBs strictly older than min_read_epoch have just
+  // been discarded, so a deleted edge whose deletion time is < watermark has no
+  // "existence" record left and no reader can need it. Relaxed on purpose: a
+  // stale read in merge only drops *fewer* edges (conservative), never a wrong
+  // one.
+  g_oldest_epoch.store(min_read_epoch, std::memory_order_relaxed);
 }
 /**
  * Periodically updates the minimal epoch of all active transactions.
@@ -84,15 +96,14 @@ void AllVBManager::GC() {
 void AllVBManager::run_min_epoch_updater(uint interval) {
   unsigned last_min_epoch = 0;
   double st = 0;
-  while ((!no_more_txn_ || read_epoch_ != cur_) || !stopped) {
+  while ((!no_more_txn_ || read_epoch_ != cur_) && !stopped) {
     update_min_version();
     GC();
-    if (read_epoch_ + 1 < min_epoch) {
-      // std::cout << "sleep time : " << to_string(st / 10)
-      //           << "ms  read_epoch_ = " << to_string(read_epoch_)
-      //           << " min_epoch = " + to_string(min_epoch) + '\n';
-      // st = 0;
-      commitVersionBlock(min_epoch);
+    if (read_epoch_ + 1 < min_epoch ||
+        (no_more_txn_ && read_epoch_ < cur_)) {
+      // Once the writer side is closed, publish the final active epoch too;
+      // otherwise a static reader can remain at the initial read epoch.
+      commitVersionBlock(no_more_txn_ ? cur_ + 1 : min_epoch);
     }
     this_thread::sleep_for(chrono::microseconds(interval));
     // if (start_count) st++;
@@ -110,7 +121,8 @@ void AllVBManager::deregister_thread(size_t id) {
     std::cout << "Trying to deregister a thread that has not been registered\n";
     assert(false);
   }
-  if (active_transactions[id] != MY_NO_TRANSACTION) {
+  if (active_transactions[id].load(std::memory_order_acquire) !=
+      MY_NO_TRANSACTION) {
     std::cout << "Trying to deregister a thread with an active transaction\n";
     assert(false);
   }
@@ -128,8 +140,17 @@ void AllVBManager::reset_max_threads(uint max_threads) {
       assert(false);
     }
   }
-  active_transactions = vector<epoch_t>(max_threads, MY_NO_TRANSACTION);
-  active_read_epochs = vector<epoch_t>(max_threads, MY_NO_TRANSACTION);
+  this->max_threads = max_threads;
+  active_transactions =
+      std::make_unique<std::atomic<epoch_t>[]>(max_threads);
+  active_read_epochs =
+      std::make_unique<std::atomic<epoch_t>[]>(max_threads);
+  for (unsigned i = 0; i < max_threads; ++i) {
+    active_transactions[i].store(MY_NO_TRANSACTION,
+                                 std::memory_order_relaxed);
+    active_read_epochs[i].store(MY_NO_TRANSACTION,
+                                std::memory_order_relaxed);
+  }
   thread_id_in_use = vector<bool>(max_threads, false);
 }
 
@@ -195,7 +216,6 @@ bool VBData::commitVersionBlock() {
 
 AllVBManager::AllVBManager(unsigned max_threads, bool on) : cur_(1) {
   active_txns_[1] = new VBData(1);
-  std::cout << "vbdata[1]: " << active_txns_[1] << '\n';
   read_epoch_ = 0;
   read_epoch_cur_ = 1;
 
@@ -210,10 +230,8 @@ AllVBManager::AllVBManager(unsigned max_threads, bool on) : cur_(1) {
 }
 
 AllVBManager::~AllVBManager() {
-  // Destructor implementation
-
   stopped.store(true);
-  min_version_updater.join();
+  if (min_version_updater.joinable()) min_version_updater.join();
 }
 
 uint64_t AllVBManager::test1() {
@@ -271,7 +289,7 @@ void AllVBManager::registerTransaction(Transaction* txn) {
   unsigned txn_num = 0;
   do {
     cur = test1();
-    active_transactions[thread_id] = cur;
+    active_transactions[thread_id].store(cur, std::memory_order_release);
   } while (cur != cur_);
 
   active_id = cur & MODPM;
@@ -330,13 +348,19 @@ void AllVBManager::registerROTransaction(Transaction* txn, int thread_id_) {
   epoch_t re;
   do {
     re = read_epoch_;
-    active_read_epochs[thread_id_] = re;
+    active_read_epochs[thread_id_].store(re, std::memory_order_release);
   } while (re < min_read_epoch);
   txn->set_read_epoch(re);
 #ifdef FINEGRAIN
-  // Capture fine-grained read timestamp from earliest unpublished epoch
-  auto* vbdata = active_txns_[read_epoch_cur_];
-  // Validate: active_txns_ slots are never nulled, so check epoch matches
+  // Capture fine-grained read timestamp from earliest unpublished epoch.
+  // active_txns_[read_epoch_cur_] is only valid to read once a VBData for
+  // epoch re+1 has actually been constructed, i.e. re+1 <= cur_ (cur_ is
+  // only incremented right after that VBData is created). After
+  // FinalizeNoMoreTxn() synchronously commits read_epoch_ up to cur_, re+1
+  // exceeds cur_ and that ring slot was never written (or was reused by an
+  // earlier epoch and is stale) — dereferencing it without this guard reads
+  // garbage and can segfault.
+  VBData* vbdata = (re + 1 <= cur_) ? active_txns_[read_epoch_cur_] : nullptr;
   if (vbdata && vbdata->get_epoch() == re + 1) {
     txn->set_read_ts(Composite(re + 1, vbdata->get_intra_counter()));
   } else {
@@ -346,7 +370,8 @@ void AllVBManager::registerROTransaction(Transaction* txn, int thread_id_) {
 }
 void AllVBManager::deregisterROTransaction(int thread_id_) {
   if (thread_id_ == -1) thread_id_ = thread_id;
-  active_read_epochs[thread_id_] = MY_NO_TRANSACTION;
+  active_read_epochs[thread_id_].store(MY_NO_TRANSACTION,
+                                       std::memory_order_release);
 }
 
 // has been locked by TxnManager
@@ -355,7 +380,8 @@ void AllVBManager::deregisterTransaction() {
   //                  " has txn_num : " + std::to_string(it->get_txn_size()) +
   //                  '\n';
   // epoch_t txn_cur = txn->get_epoch();
-  active_transactions[thread_id] = MY_NO_TRANSACTION;
+  active_transactions[thread_id].store(MY_NO_TRANSACTION,
+                                       std::memory_order_release);
   // auto vbd_id = txn_cur % (max_simul_batch_num + 1);
 
   // auto vbdata = active_txns_[txn_cur % (max_simul_batch_num + 1)];
@@ -371,6 +397,11 @@ void AllVBManager::deregisterTransaction() {
   //   commitVersionBlock(0, vbdata);
 }
 void AllVBManager::commitVersionBlock(epoch_t cur) {
+#ifdef SPIN_LOCK
+  std::unique_lock<RWSpinLock> lock(mtx_);
+#else
+  std::unique_lock<std::mutex> lock(mtx_);
+#endif
   // std::cout << to_string(cur) + "A" + to_string(read_epoch_ + 1) + " " +
   //                  to_string(vbdata->all_commit()) + '\n';
   // if (read_epoch_ != 0) assert(false);
@@ -411,11 +442,22 @@ void AllVBManager::commitVersionBlock(epoch_t cur) {
 }
 
 void AllVBManager::NoMoreTxn() {
-  // #ifdef SPIN_LOCK
-  //   std::unique_lock<RWSpinLock> lock(mtx_);
-  // #else
-  //   std::unique_lock<std::mutex> lock(mtx_);
-  // #endif
-  no_more_txn_ = true;
-  // commitVersionBlock(cur_ & 0xffffffff);
+  no_more_txn_.store(true, std::memory_order_release);
+}
+
+void AllVBManager::FinalizeNoMoreTxn() {
+  no_more_txn_.store(true, std::memory_order_release);
+
+  // Static loading has already joined every writer before this hook is
+  // called. Stop and join the asynchronous updater first, so it cannot race
+  // with the target-epoch snapshot below. This avoids reading cur_/read_epoch_
+  // concurrently while still keeping the regular online updater lock-free.
+  stopped.store(true, std::memory_order_release);
+  if (min_version_updater.joinable()) min_version_updater.join();
+
+  // With writers and the updater stopped, cur_ is stable. Publish the active
+  // write epoch synchronously; readers can then start from a complete static
+  // snapshot instead of depending on a polling interval.
+  const epoch_t target = cur_ + 1;
+  if (read_epoch_ + 1 < target) commitVersionBlock(target);
 }

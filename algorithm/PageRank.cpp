@@ -13,13 +13,12 @@ void PageRank::compute_pagerank(uint64_t num_iterations, double damping_factor,
                                 GraphStore* MEA, Satistical* global_counter) {
   Transaction* txn = new Transaction(1, true, false, graph);
   vbm->registerROTransaction(txn);
-  epoch_t read_ts = txn->get_read_epoch();
+  const epoch_t read_ts = txn->get_read_epoch();
   max_vid = graph->get_node_num();
 #ifdef FINEGRAIN
-  Composite fg_read_ts = txn->get_read_ts();
+  const Composite fg_read_ts = txn->get_read_ts();
 #ifdef PR_DEBUG
   printf("[PR] read_ts: coarse=%u, fg=(%u,%u)\n", read_ts, fg_read_ts.e, fg_read_ts.i);
-  uint64_t prev_epoch = 0, prev_intra = 0;
 #endif
 #endif
 
@@ -34,6 +33,9 @@ void PageRank::compute_pagerank(uint64_t num_iterations, double damping_factor,
 #pragma omp parallel for
   for (uint64_t v = 0; v < max_vid; v++) {
     scores[v] = init_score;
+    // StaticLoadFinalization publishes the last write epoch before this
+    // reader starts. The O(1) degree metadata is therefore valid even with
+    // FINEGRAIN enabled; do not rescan every adjacency list here.
     degrees[v] = graph->check_degree(v, read_ts);
   }
   std::vector<gapbs::pvector<double>> outgoing_contrib;
@@ -43,33 +45,6 @@ void PageRank::compute_pagerank(uint64_t num_iterations, double damping_factor,
   }
 
   for (uint64_t iteration = 0; iteration < num_iterations; iteration++) {
-#ifdef FINEGRAIN
-    {
-      vbm->deregisterROTransaction();
-      Transaction* _t = new Transaction(1, true, false, graph);
-      vbm->registerROTransaction(_t);
-      fg_read_ts = _t->get_read_ts();
-      read_ts = _t->get_read_epoch();
-#ifdef PR_DEBUG
-      uint64_t cur_epoch = fg_read_ts.e, cur_intra = fg_read_ts.i;
-      if (iteration == 0) {
-        printf("[PR iter 0] ts=(%lu,%lu) write_epoch=%u\n",
-               cur_epoch, cur_intra, vbm->getCurrentEpoch());
-      } else {
-        printf("[PR iter %lu] ts=(%lu,%lu) write_epoch=%u",
-               iteration, cur_epoch, cur_intra, vbm->getCurrentEpoch());
-        if (cur_epoch != prev_epoch) {
-          printf(" epoch_changed(%lu→%lu) prev_epoch_final_intra=%lu",
-                 prev_epoch, cur_epoch, prev_intra);
-        }
-        printf(" delta: +%lu epoch, +%ld intra\n",
-               cur_epoch - prev_epoch, (int64_t)cur_intra - (int64_t)prev_intra);
-      }
-      prev_epoch = cur_epoch; prev_intra = cur_intra;
-#endif
-      delete txn; txn = _t;
-    }
-#endif
     double dangling_sum = 0.0;
 
 #pragma omp parallel for reduction(+ : dangling_sum)
@@ -161,6 +136,10 @@ void PageRank::compute_pagerank(uint64_t num_iterations, double damping_factor,
 
   vbm->deregisterROTransaction();
 
+  // The unified driver owns result serialization. Keeping the historical AVB
+  // file output opt-in prevents a full sort plus per-line I/O from being
+  // charged to the algorithm's processing time.
+#ifdef AVB_LEGACY_RESULT_OUTPUT
   if (MEA != nullptr) {
     std::ofstream outfile("output_pr.result");
 
@@ -180,4 +159,5 @@ void PageRank::compute_pagerank(uint64_t num_iterations, double damping_factor,
     }
     outfile.close();
   }
+#endif
 }

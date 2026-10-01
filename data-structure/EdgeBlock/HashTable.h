@@ -217,6 +217,33 @@ class HashTable2 {
     }
     hashtable[index] = dest_node;
   }
+
+  void removeDestHashTableVal(uint64_t dest_node) {
+    size_t index = hash(dest_node);
+    while (hashtable[index] != FLAG_EMPTY_SLOT && hashtable[index] != dest_node) {
+      index = (index + 1) & (hashBlockSize - 1);
+    }
+    if (hashtable[index] != dest_node) return;  // not present
+
+    // Backward-shift deletion (Knuth) keeps the linear-probe chain valid.
+    hashtable[index] = FLAG_EMPTY_SLOT;
+    size_t i = index;
+    size_t j = index;
+    for (;;) {
+      j = (j + 1) & (hashBlockSize - 1);
+      if (hashtable[j] == FLAG_EMPTY_SLOT) break;  // end of cluster
+      size_t home = hash(hashtable[j]);
+      // Move key at j into gap i iff i lies on j's probe path [home, j).
+      bool on_path = (home <= j) ? (home <= i && i < j)
+                                 : (i >= home || i < j);
+      if (on_path) {
+        hashtable[i] = hashtable[j];
+        hashtable[j] = FLAG_EMPTY_SLOT;
+        i = j;
+      }
+    }
+    entryCounter--;
+  }
   // ~HashTable() {}
 };
 #endif  // EDGE_BLOCK_HASHTABLE_H

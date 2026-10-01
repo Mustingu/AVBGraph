@@ -41,7 +41,7 @@ void WCC::compute_wcc(GraphStore* MEA) {
       auto* ds = graph->GetBlockByIndex(u);
       ds->getReadLock();
       uint64_t my = components[u];
-      GraphAlgorithms::for_each_edge(ds, Composite(read_ts, 0),
+      GraphAlgorithms::for_each_edge(ds, Composite(read_ts, INTRA_MAX),
           [&](EdgeWithIndex* edge) {
             uint64_t v = edge->e & ~DELETION_MASK;
             uint64_t other = components[v];
@@ -58,7 +58,7 @@ void WCC::compute_wcc(GraphStore* MEA) {
     for (uint64_t u = 0; u < max_vid; u++) {
       auto* ds = graph->GetBlockByIndex(u);
       ds->getReadLock();
-      GraphAlgorithms::for_each_edge(ds, Composite(read_ts, 0),
+      GraphAlgorithms::for_each_edge(ds, Composite(read_ts, INTRA_MAX),
           [&](EdgeWithIndex* edge) {
             uint64_t v = edge->e & ~DELETION_MASK;
             uint64_t a = components[u];

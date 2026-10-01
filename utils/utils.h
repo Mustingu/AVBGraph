@@ -16,7 +16,10 @@
 #include "HALMemoryPool/BlockAllocator.hpp"
 #include "data-structure/data_types.h"
 
+// Default is fine-grained; AVB_COARSE selects the historical coarse mode.
+#ifndef AVB_COARSE
 #define FINEGRAIN
+#endif
 
 // BUG: little MATCHTXNNUM (such as 10) will cause too many txn-block, insulting
 // sink and transform error
@@ -47,8 +50,14 @@ extern MemoryAllocator* la;
 extern thread_local int threadid;
 extern int xxx, count_vb_n;
 
+// GC watermark: the oldest epoch still needed by any reader (lagging is fine —
+// it only makes merge drop fewer deleted edges, never a wrong one). Advanced by
+// AllVBManager::GC(); read by VertexEdges::merge_tmpev_with_eb().
+extern std::atomic<epoch_t> g_oldest_epoch;
+
 // #define TVB_STATS  // uncomment for TVB scan statistics
 // #define PR_DEBUG   // uncomment for PageRank per-iteration debug output
+// #define AVB_LEGACY_RESULT_OUTPUT  // standalone algorithm result files
 #ifdef TVB_STATS
 extern std::atomic<long long> tvb_scan_total;
 extern std::atomic<long long> tvb_scan_vertices;

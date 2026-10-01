@@ -152,6 +152,10 @@ ds->unleashReadLock();
 
 All algorithms follow the pattern: create RO transaction → iterate edges → produce result. Constructor signatures are `(GraphStore*, AllVBManager*, thread_num)`.
 
+### PageRank snapshot semantics
+
+One `compute_pagerank()` call registers one read-only transaction before initialization and keeps it registered through every PR iteration and result materialization. Both coarse `read_ts` and fine-grained `fg_read_ts` are captured once and reused; the FINEGRAIN path must not deregister/re-register between iterations. This provides one stable graph snapshot for the full iterative algorithm and keeps old versions pinned until the call finishes. The same rule applies to the AVBGraph-dual (fine-grained) build; AVBGraph-coarse uses its initial coarse epoch.
+
 ```cpp
 // PageRank
 PageRank pr(graph, vbm, 64);
@@ -298,4 +302,35 @@ Edit `utils/utils.h`:
 #define FINEGRAIN     // Fine-grained timestamps (default: on)
 // #define TVB_STATS  // TVB scan statistics per iteration
 // #define PR_DEBUG   // PageRank per-iteration timestamp output
+// #define AVB_LEGACY_RESULT_OUTPUT  // write legacy output_pr/bfs/sssp files
 ```
+
+## Driver static-evaluation integration
+
+When AVB is used through the repository's `--graphalytics` driver mode, the
+load phase ends with `AllVBManager::FinalizeNoMoreTxn()`. It first closes and
+joins the background epoch updater, then synchronously transforms/publishes
+the last write epoch. This gives static readers a complete snapshot without
+racing the finalizer against the updater.
+
+The driver obtains algorithm results from the in-memory result vectors and
+writes its requested `--output` file after `processing_ms` has been measured.
+The historical AVB algorithm files (`output_pr.result`, `bfs.output`, and
+`output_sssp.result`) are disabled by default because their full sort and
+per-line I/O distort benchmark timing. Define `AVB_LEGACY_RESULT_OUTPUT` only
+for standalone debugging that explicitly needs them.
+
+## Large-graph vertex growth
+
+`GraphStore::blocks` and the driver-maintained `p_mHashMap` use
+`tbb::concurrent_vector`. Their growth boundary is `size()`, not `capacity()`:
+the latter may reserve unconstructed slots that cannot safely be indexed.
+For driver loading, follow the upstream AVB benchmark path: construct a
+`VertexEdges`, grow both vectors to include its logical ID, install
+`blocks[id].eb`, and only then release the external-ID map accessor. This
+ordering keeps other writers from resolving an ID before its block is ready
+and supports inputs such as `graph24` that exceed the initial 200K table.
+
+`GraphStore::new_vertex()` retains a defensive internal creation lock for
+direct callers, but the benchmark driver deliberately uses the upstream
+publication sequence above rather than substituting that helper.

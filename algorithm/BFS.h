@@ -36,6 +36,30 @@ class BFS {
   int64_t do_bfs_BUStep(Transaction& txn, int64_t distance,
                         gapbs::Bitmap& front, gapbs::Bitmap& next);
 
+  struct Stats {
+    bool enabled = false;
+    std::atomic<uint64_t> init_vertices{0};
+    std::atomic<uint64_t> init_edges{0};
+    std::atomic<uint64_t> td_vertices{0};
+    std::atomic<uint64_t> td_edge_checks{0};
+    std::atomic<uint64_t> td_discoveries{0};
+    std::atomic<uint64_t> td_repeated{0};
+    std::atomic<uint64_t> bu_candidates{0};
+    std::atomic<uint64_t> bu_edge_checks{0};
+    std::atomic<uint64_t> bu_early_stops{0};
+    std::atomic<uint64_t> bu_misses{0};
+    std::atomic<uint64_t> bu_locks{0};
+    std::atomic<uint64_t> bu_success_checks{0};
+    std::atomic<uint64_t> bu_max_success_checks{0};
+    std::atomic<uint64_t> td_calls{0};
+    std::atomic<uint64_t> bu_calls{0};
+    std::atomic<uint64_t> direction_switches{0};
+    std::atomic<uint64_t> td_ms{0};
+    std::atomic<uint64_t> bu_ms{0};
+  };
+
+  Stats stats_;
+
   GraphStore* graph;
   AllVBManager* vbm;
   std::vector<int64_t> distances;

@@ -32,6 +32,21 @@
  * same way as supporting edge versions but requires to clean the property
  * section on GC.
  */
+
+// Read visibility of a PA / tmp_item entry for a scan. In FINEGRAIN the PA
+// carries the newest version together with an intra-epoch timestamp, so
+// visibility must be composite ((coarse, intra) < read_ts); a coarse-only check
+// would leak a later intra-epoch write into an earlier reader intra. In coarse
+// mode the intra is meaningless (the non-fine path passes Composite(read_ts, 0)
+// and writes index = 0xFFFFFFFF), so the plain coarse check is the correct one.
+static inline bool edge_visible_at(const EdgeWithIndex& e, Composite read_ts) {
+#ifdef FINEGRAIN
+  return e.IsVisibleAtComposite(read_ts);
+#else
+  return e.IsVisibleAt(read_ts.e);
+#endif
+}
+
 class VertexEdges : public VertexEdgesInterface {
  public:
   VertexEdges(dst_t src, dst_t* _start, size_t _capacity,
@@ -77,6 +92,27 @@ class VertexEdges : public VertexEdgesInterface {
 
   unsigned get_degree() { return num; }
   unsigned get_degree(epoch_t epoch);
+  // True only for a block that has never received versioned or buffered writes.
+  // This conservative predicate intentionally does not infer safety from GC:
+  // VersionBlockManager currently has no synchronized empty-history state.
+  bool has_primary_only_state() {
+    return tmp_ev == 0 && VBM.GetEndEpoch() == 0
+#ifdef FINEGRAIN
+           && VBM.GetActiveTvbMask() == 0
+#endif
+        ;
+  }
+
+  // Fast read for an immutable primary adjacency. The caller must hold the
+  // VertexEdges read lock and establish the primary-only predicate first.
+  template <typename EdgeCallback>
+  void for_each_primary_edge(EdgeCallback cb) const {
+    for (unsigned i = 0; i < edges_and_versions; ++i) {
+      const auto* edge = start + i;
+      if (!is_delete(edge->e)) cb(const_cast<EdgeWithIndex*>(edge));
+    }
+  }
+
   // unsigned get_degree();
   void build(unsigned _num, dst_t* _edges, dst_t* _properties);
 
@@ -144,13 +180,13 @@ class VertexEdges : public VertexEdgesInterface {
                      EdgeCallback callback) {
     // volatile double sm = 0;
     for (auto i = tmp_item; i < tmp_item + tmp_ev; i++) {
-      if (!is_delete(i->e) && i->IsVisibleAt(read_ts.e)) {
+      if (!is_delete(i->e) && edge_visible_at(*i, read_ts)) {
         callback(i);
       }
     }
 
     for (auto i = start; i < start + edges_and_versions; i++) {
-      if (!is_delete(i->e) && i->IsVisibleAt(read_ts.e)) {
+      if (!is_delete(i->e) && edge_visible_at(*i, read_ts)) {
         callback(i);
       }
     }
@@ -212,8 +248,8 @@ class VertexEdges : public VertexEdgesInterface {
 #else
     if (read_ts.e < VBM.GetEndEpoch()) {
 #endif
-      need_iterator = true;
       vb = VBM.GetLastVB();
+      need_iterator = vb != nullptr;
     }
   }
 
@@ -222,13 +258,13 @@ class VertexEdges : public VertexEdgesInterface {
                                VersionBlock*& vb, EdgeCallback callback) {
     // volatile double sm = 0;
     for (auto i = tmp_item; i < tmp_item + tmp_ev; i++) {
-      if (!is_delete(i->e) && i->IsVisibleAt(read_ts.e)) {
+      if (!is_delete(i->e) && edge_visible_at(*i, read_ts)) {
         if (callback(i)) return;
       }
     }
 
     for (auto i = start; i < start + edges_and_versions; i++) {
-      if (!is_delete(i->e) && i->IsVisibleAt(read_ts.e)) {
+      if (!is_delete(i->e) && edge_visible_at(*i, read_ts)) {
         if (callback(i)) return;
       }
     }
@@ -290,8 +326,8 @@ class VertexEdges : public VertexEdgesInterface {
 #else
     if (read_ts.e < VBM.GetEndEpoch()) {
 #endif
-      need_iterator = true;
       vb = VBM.GetLastVB();
+      need_iterator = vb != nullptr;
     }
   }
 
@@ -300,7 +336,7 @@ class VertexEdges : public VertexEdgesInterface {
                                    VersionBlock*& vb, EdgeCallback callback) {
     // volatile double sm = 0;
     for (auto i = tmp_item; i < tmp_item + tmp_ev; i++) {
-      if (!is_delete(i->e) && i->IsVisibleAt(read_ts.e)) {
+      if (!is_delete(i->e) && edge_visible_at(*i, read_ts)) {
         // if (src_ == 43 || src_ == 36) {
         // std::cout << "src: " << src_ << " e: " << i->e
         //           << " p: " << *(double*)(&(i + TMPNUM)->properties) << " "
@@ -312,7 +348,7 @@ class VertexEdges : public VertexEdgesInterface {
     }
 
     for (auto i = start; i < start + edges_and_versions; i++) {
-      if (!is_delete(i->e) && i->IsVisibleAt(read_ts.e)) {
+      if (!is_delete(i->e) && edge_visible_at(*i, read_ts)) {
         // if (src_ == 43 || src_ == 36) {
         // std::cout << "src: " << src_ << " e: " << i->e
         //           << " p: " << *(double*)(&(i + TMPNUM)->properties) << " "
@@ -366,8 +402,8 @@ class VertexEdges : public VertexEdgesInterface {
 #else
     if (read_ts.e < VBM.GetEndEpoch()) {
 #endif
-      need_iterator = true;
       vb = VBM.GetLastVB();
+      need_iterator = vb != nullptr;
     }
   }
 

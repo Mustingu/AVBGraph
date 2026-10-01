@@ -155,6 +155,9 @@ void SSSP::compute_sssp(uint64_t source, double delta, GraphStore* MEA) {
     }
   }
 
+  // The driver writes AlgorithmResult after timing. Retain the old standalone
+  // output only when explicitly requested at compile time.
+#ifdef AVB_LEGACY_RESULT_OUTPUT
   if (MEA != nullptr) {
     std::ofstream outfile("output_sssp.result");
 
@@ -174,4 +177,5 @@ void SSSP::compute_sssp(uint64_t source, double delta, GraphStore* MEA) {
     }
     outfile.close();
   }
+#endif
 }

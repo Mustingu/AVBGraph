@@ -27,7 +27,7 @@ void Args::ParseArgs(int argc, char** argv) {
   auto* prefile_opt =
       group
           ->add_option("--prefile", preset_input_file_key,
-                       "可选:预设输入文件, 支持以下键名:dota/graph24")
+                       "可选:预设输入文件, 支持以下键名:dota/dota-league/graph24/datagen-7_9-fb/datagen-8_4-fb/wiki-Talk")
           ->check(CLI::IsMember(
               preset_input_file_names));  // 检查用户输入是否在预设列表中
   group->add_option("-f,--file", input_file, "可选：输入.e文件");

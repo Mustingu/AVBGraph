@@ -51,18 +51,13 @@ struct Composite {
 #define FIRST_VERSION 0L
 #define NO_TRANSACTION numeric_limits<version_t>::max()
 #define MY_NO_TRANSACTION numeric_limits<epoch_t>::max()
-// The first bit of a dst_t type is set if the edge is versioned.
-#define VERSION_MASK (1L << 63)
 #define TMPVB_MASK (1L << 31)
 
-// version timestamp if the second bit is set there are further versions, if the
-// third bit is set this version is a deletion. it is important that the first
-// bit is never set
-// TODO change this around, a first bit set indicates a version. while an unset
-// first bit indicates that is not a version.
+// version_t flag bits: MORE_VERSION (bit 62), DELETION (bit 63); bits 0-61 are
+// the timestamp. DELETION was moved to bit 63 to leave more id space (2026-08-18).
 typedef uint64_t version_t;
 #define MORE_VERSION_MASK (1L << 62)
-#define DELETION_MASK (1L << 61)
+#define DELETION_MASK (1L << 63)
 // #endif
 #ifdef BITS32
 // Used vertex identifier and destination data structure for all data
@@ -74,8 +69,6 @@ typedef vertex_id_t dst_t;
 // This does not need to be the original first version from system start but
 // could be a later version after GC.
 #define FIRST_VERSION 0
-// The first bit of a dst_t type is set if the edge is versioned.
-#define VERSION_MASK (1 << 31)
 
 // version timestamp if the second bit is set there are further versions, if the
 // third bit is set this version is a deletion.
@@ -87,17 +80,7 @@ typedef uint32_t version_t;
 #define DELETION_MASK (1 << 29)
 #endif
 
-#define make_versioned(e) (e | VERSION_MASK)
-#define make_unversioned(e) (e & ~VERSION_MASK & ~DELETION_MASK)
-#define is_versioned(e) (e & VERSION_MASK)
-
 #define is_delete(e) (e & DELETION_MASK)
-
-// bool is_versioned(dst_t e);
-//
-// dst_t make_versioned(dst_t e);
-//
-// dst_t make_unversioned(dst_t e);
 
 bool more_versions_existing(version_t v);
 

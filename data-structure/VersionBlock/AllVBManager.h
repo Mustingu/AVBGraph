@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <thread>
@@ -112,6 +113,10 @@ class AllVBManager {
 
   void commitVersionBlock(epoch_t cur);
   void NoMoreTxn();
+  // Close the write phase and synchronously publish every remaining epoch.
+  // Static evaluation uses this instead of polling an asynchronous updater,
+  // whose VB transform can legitimately take longer than a short timeout.
+  void FinalizeNoMoreTxn();
   void P_timess() { std::cout << timess << '\n'; }
 
   epoch_t getCurrentEpoch() const { return cur_; }
@@ -149,7 +154,7 @@ class AllVBManager {
 
  private:
   volatile epoch_t cur_;
-  bool no_more_txn_ = false;
+  std::atomic<bool> no_more_txn_{false};
   static const unsigned max_txn_num_invb_ =
       BATCHTXNNUM - 1;  // Maximum number of transactions in a running VB
   static const unsigned max_simul_batch_num =
@@ -162,6 +167,9 @@ class AllVBManager {
 #else
   std::mutex mtx_;
 #endif
+  // Epoch publication can be requested by the background updater and by a
+  // static-load finalizer. Serialize those paths so a synchronous finalizer
+  // cannot transform or enqueue the same VBData twice.
   std::atomic<uint64_t> timess;
   volatile epoch_t read_epoch_;
   unsigned read_epoch_cur_;
@@ -174,8 +182,8 @@ class AllVBManager {
   mutex thread_registry_lock;
   vector<bool> thread_id_in_use;
 
-  vector<epoch_t> active_transactions;
-  vector<epoch_t> active_read_epochs;
+  std::unique_ptr<std::atomic<epoch_t>[]> active_transactions;
+  std::unique_ptr<std::atomic<epoch_t>[]> active_read_epochs;
   epoch_t min_epoch{numeric_limits<epoch_t>::min()};
   epoch_t min_read_epoch{numeric_limits<epoch_t>::min()};
   queue<VBData*> vb_que_;

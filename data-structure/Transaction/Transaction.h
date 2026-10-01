@@ -11,11 +11,6 @@
 #include "utils/Interface.h"
 #include "utils/utils.h"
 
-// used by dst_t ?
-#define DELETE_FLAG (1L << 63)
-#define IS_DELETE(x) (x & DELETE_FLAG)
-#define SET_DELETE(x) (x |= DELETE_FLAG)
-
 // used by VB_index
 #define LINK_SINK_FALG (1 << 31)
 #define IS_TRACK(x) (!(x & LINK_SINK_FALG))
