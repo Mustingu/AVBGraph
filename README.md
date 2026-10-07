@@ -2,6 +2,10 @@
 
 In-memory transactional graph storage with epoch-based MVCC. Supports coarse-grained (epoch) and fine-grained (intra-epoch) snapshot isolation for consistent analytical queries on evolving graphs.
 
+## Benchmark driver
+
+For the unified benchmark driver and experiment usage, see [Mustingu/TransactionGraphSystemDriver](https://github.com/Mustingu/TransactionGraphSystemDriver). The driver integrates AVBGraph with other graph systems and supports write workloads, shared static graph analytics, concurrent read/write and HotSet workloads, memory monitoring, and write-thread scalability.
+
 ## Build
 
 ```bash
@@ -307,7 +311,7 @@ Edit `utils/utils.h`:
 
 ## Driver static-evaluation integration
 
-When AVB is used through the repository's `--graphalytics` driver mode, the
+When AVB is used through the benchmark driver's `--graphalytics` mode, the
 load phase ends with `AllVBManager::FinalizeNoMoreTxn()`. It first closes and
 joins the background epoch updater, then synchronously transforms/publishes
 the last write epoch. This gives static readers a complete snapshot without
